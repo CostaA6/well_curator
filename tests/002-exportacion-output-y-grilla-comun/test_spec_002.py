@@ -46,33 +46,21 @@ REPORT_LOG = SPEC002_TEST_DIR / "export_report.log"
 @pytest.fixture(scope="module")
 def explored_wells_with_llm() -> Tuple[List[WellExplorationResult], Dict[str, Dict[str, pd.DataFrame]]]:
     """
-    Carga los 6 pozos de Input/ y asocia los metadatos extraídos por Gemma-4-E4B
-    (reutilizando exploration_summary.json de Spec 001 si ya existe, o invocando LocalLlamaServer).
+    Ejecuta el flujo completo en vivo de principio a fin (sin caché):
+    1. Escanea los 6 pozos de Input/ con las_explorer.py.
+    2. Levanta LocalLlamaServer (Gemma-4-E4B en GPU RTX 4060) y extrae los metadatos de cada pozo en vivo.
+    3. Entrega los resultados a well_exporter.py.
     """
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     results, all_dfs = explore_all_wells(INPUT_DIR)
 
-    cached_meta_by_well: Dict[str, Dict[str, object]] = {}
-    if SPEC001_SUMMARY_JSON.exists():
-        raw_list = json.loads(SPEC001_SUMMARY_JSON.read_text(encoding="utf-8"))
-        for item in raw_list:
-            wfolder = item.get("well_folder_name")
-            if wfolder and item.get("llm_metadata"):
-                cached_meta_by_well[wfolder] = item["llm_metadata"]
-
-    missing_llm = [w for w in results if w.well_folder_name not in cached_meta_by_well]
-    if missing_llm:
-        with LocalLlamaServer(gpu_device="Vulkan1") as server:
-            for w in missing_llm:
-                cached_meta_by_well[w.well_folder_name] = server.extract_well_metadata(
-                    w.consolidated_header_block
-                )
-
-    for w in results:
-        w.llm_metadata = normalize_well_metadata(
-            cached_meta_by_well[w.well_folder_name],
-            fallback_well_name=w.well_folder_name,
-        )
+    with LocalLlamaServer(gpu_device="Vulkan1") as server:
+        for w in results:
+            meta = server.extract_well_metadata(w.consolidated_header_block)
+            w.llm_metadata = normalize_well_metadata(
+                meta,
+                fallback_well_name=w.well_folder_name,
+            )
 
     return results, all_dfs
 
