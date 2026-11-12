@@ -2,24 +2,23 @@
 Memoria del proyecto entre sesiones. Máximo ~50 líneas: resume o elimina lo que ya no aporte.
 
 ## Estado actual
-- **Repositorio GitHub**: `https://github.com/CostaA6/well_curator`
-  - Rama `main`: versión base inicial de Spec 001.
-  - Rama activa `feat/pure-header-llm-extraction`: Spec 001 v2 con corte puro de encabezado (triple barrera) hacia el LLM y `lasio` reservado solo para la tabla numérica de curvas (`5/5 tests passed`).
-- **Motor GPU local**: `model/bin/llama-server.exe` (`Vulkan1`: NVIDIA GeForce RTX 4060 Laptop GPU) ejecutando `model/gemma-4-E4B-it-Q4_K_M.gguf` a ~60 tokens/seg.
+- **Repositorio GitHub**: `https://github.com/CostaA6/well_curator` (rama `feat/pure-header-llm-extraction`).
+- **Specs completadas y validadas**:
+  - **Spec 001** (`5/5 passed`): Corte puro del encabezado `.LAS` en Python con triple barrera -> `Gemma-4-E4B` en GPU (`Vulkan1` RTX 4060) y `lasio` exclusivo para leer la matriz numérica `~A`.
+  - **Spec 002** (`3/3 passed`): Grilla común al paso más chico (`min_step`) y exportación incremental hacia `output/`:
+    - `output/well_metadata.xlsx`: 6 pozos x 119 columnas de curvas (`yes`/`no`).
+    - `output/wells/<Well>_selected.csv`: CSV por pozo con `DEPTH,nombre_pozo,UWI,XWELL,YWELL,COTA` + curvas con `NaN`.
+    - `output/time_logs/`: `xpt_stations_summary.csv` (18 estaciones XPT de `CVa-37` y `CVa-39`) + CSVs individuales en tiempo.
 
 ## Decisiones (y por qué)
-- **Texto crudo del header para el LLM + `lasio` solo para curvas**: `lasio` es excelente leyendo la matriz numérica `~A`, pero falla en `~Parameter` cuando el operador usa múltiples `:` (ej. `FL1 . Y: 2.482.090,63 : Field Location 1`). Por eso Python corta el texto plano antes de `~A` sin usar `lasio` y se lo entrega directo a `Gemma-4-E4B`.
-- **Triple barrera para detectar el fin del encabezado (`extract_raw_header_before_ascii`)**:
-  1. Sección `~A` / `~ A` / `~ASCII` / `~LOG_DATA` (estándar CWLS LAS 1.2/2.0/3.0, presente en los 32 `.las` de `Input/`).
-  2. Detector de fila numérica ($\ge 3$ floats seguidos sin `:`) luego de `~Curve`, por si un archivo de campo omitió `~A`.
-  3. Tope de seguridad de `500` líneas por encabezado.
-- **Regularización en el LLM**: el agente devuelve JSON con `nombre_pozo` limpio, `uwi` en mayúsculas, `coord_x`, `coord_y`, `cota`, `referencia_cota` y `curvas_detectadas` leídas directamente de `~Curve`.
-
-## Aprendizajes y errores a evitar
-- **Contradicciones reales en `Input/` resueltas por Gemma-4-E4B**:
-  - En `CVa-38`, el archivo CBL tiene `UWI = SAI-369` y los otros dos tienen `AR0100008327` (el modelo elige `AR0100008327`).
-  - En `CVa-39`, el archivo de Calibre tiene `UWI = AR010000` (truncado) y `Y: 2.4821.911` (error de tipeo); el modelo toma `AR0100008372` y `X=4834487.45, Y=2481883.31` de las corridas definitivas.
+- **Texto crudo del header para el LLM + `lasio` solo para curvas**: evita el bug de `lasio` con doble `:` en `~Parameter` (`FL1 . Y: 2.482.090,63 : Field Location 1`).
+- **Normalización Geodésica y de UWI**:
+  - En la Cuenca del Golfo San Jorge (Faja 2), `X` (`XWELL`) es Este (`~2.481.xxx`) e `Y` (`YWELL`) es Norte (`~4.834.xxx`). Varios `.las` invierten X/Y; `normalize_well_metadata` las corrige automáticamente.
+  - Los `UWI` `AR01` de 12 caracteres se completan con `00` a 14 caracteres (`AR010000850000`, `AR010000832700`, `AR010000837200`).
+- **Grilla común al paso más chico (`Step = min(effective_steps)`)**:
+  - En archivos Baker Atlas (`CVa-19`, `CVa-24`) donde el header dice `STEP = 0.0`, el paso físico real entre filas es `1/4 pie = 0.0762 m` (`compute_effective_step` lo detecta automáticamente).
+  - Los valores faltantes fuera del tramo medido de cada curva o en brechas internas se exportan como `NaN`.
+- **Curvas repetidas**: por defecto se exportan todas con sufijo `:2`, `:3`, `:4` (`repeat_strategy="keep_all"`), manteniendo lista la opción `repeat_strategy="merge"` para la interfaz de usuario.
 
 ## Próximos pasos
-- Revisar la rama `feat/pure-header-llm-extraction` (y hacer merge a `main` si el usuario aprueba).
-- Iniciar **Spec 002**: resolución de curvas repetidas, grilla común de profundidad (`DEPT`) y exportación a Excel + CSV/JSON.
+- **Spec 003**: Interfaz gráfica ligera (ej. `Streamlit`) para crear/cargar un nuevo pozo arrastrando archivos `.LAS`, elegir el tratamiento de curvas repetidas (`keep_all` vs `merge`) y actualizar `output/` con un clic.

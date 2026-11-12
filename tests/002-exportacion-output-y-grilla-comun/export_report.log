@@ -1,0 +1,48 @@
+================================================================================
+REPORTE DE EXPORTACIÓN Y GRILLA COMÚN — SPEC 002 (Carpeta output/)
+================================================================================
+
+POZO 1: YPF.SC.CVa-19 (Archivo CSV: YPF.SC.CVa-19_selected.csv)
+  - UWI: AR010000694600 | XWELL: 2481797 | YWELL: 4834255 | COTA: 294.14 m
+  - Grilla Común DEPTH: Start=99.974 m, Stop=1504.798 m, Step=0.0762 m (18437 filas)
+  - Curvas exportadas (44): AMP3FT, AMP5FT, BIT, BIT:2, BVOL, CAL, CCL, CNCF, CVOL, DT, LSN, LSPD, LTEN, M2P6, M2R1, M2R1:2, M2R2, M2R2:2, M2R3, M2R3:2, M2R6, M2R6:2, M2R6:3, M2R6:4, M2R9, M2R9:2, M2RX, MBVI, MBVM, MINMK, MPHE, MPHS, MPRM, NEU, PE, PORA, PORZ, RWAZ, SP, SSN, TT, TT3FT, ZCOR, ZDEN
+  - Imagen validación: YPF.SC.CVa-19_unified_vs_raw.png
+--------------------------------------------------------------------------------
+POZO 2: YPF.SC.CVa-24 (Archivo CSV: YPF.SC.CVa-24_selected.csv)
+  - UWI: AR010000701100 | XWELL: 2482091 | YWELL: 4833870 | COTA: 293.36 m
+  - Grilla Común DEPTH: Start=115.672 m, Stop=1455.191 m, Step=0.0762 m (17580 filas)
+  - Curvas exportadas (34): BIT, BVOL, CAL, CNCF, CVOL, LSN, M2P6, M2R1, M2R2, M2R3, M2R3:2, M2R6, M2R6:2, M2R6:3, M2R6:4, M2R9, M2R9:2, M2RX, M2RX:2, MBVI, MBVM, MBVM:2, MPHE, MPHE:2, MPHS, MPHS:2, MPRM, MPRM:2, PE, PORZ, RWAZ, SSN, ZCOR, ZDEN
+  - Imagen validación: YPF.SC.CVa-24_unified_vs_raw.png
+--------------------------------------------------------------------------------
+POZO 3: YPF.SC.CVa-25 (Archivo CSV: YPF.SC.CVa-25_selected.csv)
+  - UWI: AR010000701200 | XWELL: 2482049 | YWELL: 4834285 | COTA: 292.88 m
+  - Grilla Común DEPTH: Start=115.0 m, Stop=1532.0 m, Step=0.5 m (2835 filas)
+  - Curvas exportadas (20): CAL, CNCF, DT, M2P6, M2R1, M2R2, M2R3, M2R6, M2R9, M2RX, MBVI, MPHE, MPHS, PE, PORA, PORZ, RWAZ, SP, ZCOR, ZDEN
+  - Imagen validación: YPF.SC.CVa-25_unified_vs_raw.png
+--------------------------------------------------------------------------------
+POZO 4: YPF.SC.CVa-37 (Archivo CSV: YPF.SC.CVa-37_selected.csv)
+  - UWI: AR010000850000 | XWELL: 2481254 | YWELL: 4834481 | COTA: 293.67 m
+  - Grilla Común DEPTH: Start=83.058 m, Stop=817.4736 m, Step=0.1524 m (4820 filas)
+  - Curvas exportadas (36): AHF10, AHF90, AHFCO90, AHSFI, AHT10, AHT20, AHT30, AHT60, AHT90, AHTD2, BS, CBL, CCL, CFTC, DPHZ, DT, HCAL, HDRA, IHV, ITT, LC01, LC02, PEFZ, RHOZ, RWA, SP, SPHI, SVEL, TENS, TNPH, TT, TT1, TT2, TT3, TT4, TTSL
+  - Registros en Tiempo exportados en output/time_logs/YPF.SC.CVa-37/: 12 archivos CSV
+  - Imagen validación: YPF.SC.CVa-37_unified_vs_raw.png
+--------------------------------------------------------------------------------
+POZO 5: YPF.SC.CVa-38 (Archivo CSV: YPF.SC.CVa-38_selected.csv)
+  - UWI: AR010000832700 | XWELL: 2481588 | YWELL: 4834450 | COTA: 291.99 m
+  - Grilla Común DEPTH: Start=4.4196 m, Stop=1418.6916 m, Step=0.1524 m (9281 filas)
+  - Curvas exportadas (40): AHF10, AHF90, AHFCO90, AHSFI, AHT10, AHT20, AHT30, AHT60, AHT90, AHTD2, BS, BS:2, CBL, CBLF, CBSL, CCL, DPHZ, DT, HCAL, HCAL:2, HDRA, IHV, ITT, LC01, LC02, PEFZ, RHOZ, RWA, SP, SPHI, SVEL, TENS, TENS:2, TNPH, TT, TT1, TT2, TT3, TT4, TTSL
+  - Imagen validación: YPF.SC.CVa-38_unified_vs_raw.png
+--------------------------------------------------------------------------------
+POZO 6: YPF.SC.CVa-39 (Archivo CSV: YPF.SC.CVa-39_selected.csv)
+  - UWI: AR010000837200 | XWELL: 2481883 | YWELL: 4834487 | COTA: 292.35 m
+  - Grilla Común DEPTH: Start=7.9248 m, Stop=124.8156 m, Step=0.1524 m (768 filas)
+  - Curvas exportadas (49): AF10, AF10:2, AF90, AF90:2, AFCO90, AFCO90:2, AFD2, AFD2:2, AT10, AT10:2, AT20, AT20:2, AT30, AT30:2, AT60, AT60:2, AT90, AT90:2, BS, BS:2, BS:3, DPHZ, DPHZ:2, HCAL, HCAL:2, HCAL:3, HDRA, HDRA:2, ICV, IHV, IHV:2, IHV:3, LC01, LC01:2, LC02, LC02:2, PEFZ, PEFZ:2, RHOZ, RHOZ:2, RWA, RWA:2, SP, SP:2, TENS, TENS:2, TENS:3, TNPH, TNPH:2
+  - Registros en Tiempo exportados en output/time_logs/YPF.SC.CVa-39/: 6 archivos CSV
+  - Imagen validación: YPF.SC.CVa-39_unified_vs_raw.png
+--------------------------------------------------------------------------------
+
+EXCEL MAESTRO: C:\Users\andre\OneDrive\Escritorio\Proyectos\well_curator\output\well_metadata.xlsx
+  - Total pozos registrados : 6
+  - Total columnas de curvas: 119
+RESUMEN TIEMPO (XPT): C:\Users\andre\OneDrive\Escritorio\Proyectos\well_curator\output\time_logs\xpt_stations_summary.csv (18 estaciones)
+IMÁGENES GLOBALES: excel_curve_availability_matrix.png, xpt_time_stations_overview.png

@@ -257,3 +257,217 @@ def plot_well_curves_preview(
     fig.savefig(out_path)
     plt.close(fig)
     return out_path
+
+
+def plot_unified_vs_raw_comparison(
+    well_result: WellExplorationResult,
+    well_dfs: Dict[str, pd.DataFrame],
+    unified_csv_path: Path,
+    output_dir: Path,
+    max_tracks: int = 4,
+) -> Path:
+    """
+    Spec 002 (RNF-2): Superpone las curvas originales de los .LAS con las curvas del CSV
+    unificado en la grilla común (al paso más chico) para verificar visualmente que no haya
+    extrapolaciones fuera de rango ni distorsiones en la interpolación.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    unified_df = pd.read_csv(unified_csv_path)
+
+    # Mapear cada assigned_name a su serie original (depth, values, source_file)
+    raw_series_map: Dict[str, Tuple[pd.Series, pd.Series, str, str]] = {}
+    for s in well_result.las_summaries:
+        if s.index_type != "DEPTH":
+            continue
+        df = well_dfs[s.file_name]
+        d_s = df.iloc[:, 0]
+        for idx, c in enumerate(s.curves, start=1):
+            if idx < df.shape[1]:
+                v_s = df.iloc[:, idx]
+                if v_s.notna().any():
+                    raw_series_map[c.assigned_name] = (d_s, v_s, s.file_name, c.unit)
+
+    preferred = [
+        "NEU", "DT", "CAL", "HCAL", "ZDEN", "RHOZ", "M2R6", "M2R6:2",
+        "SP", "TNPH", "CBL", "AF10", "AF10:2", "BS", "BS:2",
+    ]
+    selected_cols: List[str] = []
+    for cand in preferred + sorted(raw_series_map.keys()):
+        if cand in unified_df.columns and cand in raw_series_map and cand not in selected_cols:
+            selected_cols.append(cand)
+        if len(selected_cols) >= max_tracks:
+            break
+
+    n_tracks = max(1, len(selected_cols))
+    fig, axes = plt.subplots(1, n_tracks, figsize=(3.4 * n_tracks, 8.5), dpi=130, sharey=True)
+    if n_tracks == 1:
+        axes = [axes]
+
+    u_depth = unified_df["DEPTH"]
+
+    for ax, col_name in zip(axes, selected_cols):
+        d_raw, v_raw, src_file, unit = raw_series_map[col_name]
+        valid_raw = d_raw.notna() & v_raw.notna()
+
+        valid_uni = unified_df[col_name].notna()
+
+        ax.plot(
+            v_raw[valid_raw],
+            d_raw[valid_raw],
+            color="#bbbbbb",
+            linewidth=2.8,
+            alpha=0.85,
+            label=f"Original ({src_file[:12]}..)",
+        )
+        ax.plot(
+            unified_df.loc[valid_uni, col_name],
+            u_depth[valid_uni],
+            color="#d62728",
+            linewidth=1.0,
+            linestyle="--",
+            label="CSV Grilla Común",
+        )
+
+        ax.set_title(f"{col_name} [{unit}]\n(n={int(valid_uni.sum())} pts)", fontsize=9.5, fontweight="bold")
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend(loc="upper right", fontsize=7.5)
+
+        vals_clean = unified_df.loc[valid_uni, col_name]
+        if len(vals_clean) > 10:
+            p1, p99 = np.percentile(vals_clean, [1, 99])
+            if p99 > p1:
+                margin = (p99 - p1) * 0.12
+                ax.set_xlim(p1 - margin, p99 + margin)
+
+    axes[0].invert_yaxis()
+    axes[0].set_ylabel("Profundidad Grilla Común [m]", fontsize=10, fontweight="bold")
+
+    step_val = round(float(u_depth.iloc[1] - u_depth.iloc[0]), 4) if len(u_depth) > 1 else 0.0
+    uwi_val = unified_df["UWI"].iloc[0] if len(unified_df) > 0 else ""
+    x_val = unified_df["XWELL"].iloc[0] if len(unified_df) > 0 else ""
+    y_val = unified_df["YWELL"].iloc[0] if len(unified_df) > 0 else ""
+    cota_val = unified_df["COTA"].iloc[0] if len(unified_df) > 0 else ""
+
+    fig.suptitle(
+        f"Validación Grilla Común vs. Original — { unified_df['nombre_pozo'].iloc[0] }\n"
+        f"UWI: {uwi_val} | X: {x_val} | Y: {y_val} | Cota: {cota_val}m | "
+        f"Rango: {u_depth.min():.2f}-{u_depth.max():.2f}m (Step={step_val}m)",
+        fontsize=10.5,
+        fontweight="bold",
+        y=0.98,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+
+    out_path = output_dir / f"{well_result.well_folder_name}_unified_vs_raw.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path
+
+
+def plot_excel_availability_matrix(excel_path: Path, output_dir: Path) -> Path:
+    """
+    Spec 002 (RNF-2): Genera un mapa de calor de la matriz de disponibilidad de curvas
+    ('yes' / 'no') contenida en `output/well_metadata.xlsx`.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_excel(excel_path)
+    fixed_cols = ["File", "Well", "UWI", "Start", "Stop", "Step", "X", "Y", "Elevation"]
+    curve_cols = [c for c in df.columns if c not in fixed_cols]
+
+    binary_matrix = np.zeros((len(df), len(curve_cols)), dtype=int)
+    for r_idx in range(len(df)):
+        for c_idx, c_name in enumerate(curve_cols):
+            if str(df.loc[r_idx, c_name]).strip().lower() == "yes":
+                binary_matrix[r_idx, c_idx] = 1
+
+    fig_w = max(14.0, len(curve_cols) * 0.18)
+    fig, ax = plt.subplots(figsize=(fig_w, 5.2), dpi=130)
+
+    cmap = matplotlib.colors.ListedColormap(["#f5f5f5", "#2ca02c"])
+    ax.imshow(binary_matrix, aspect="auto", cmap=cmap, interpolation="nearest")
+
+    ax.set_yticks(range(len(df)))
+    well_labels = [
+        f"{row['Well']} ({row['UWI']}) [{row['Start']:.1f}-{row['Stop']:.1f}m, step={row['Step']}m]"
+        for _, row in df.iterrows()
+    ]
+    ax.set_yticklabels(well_labels, fontsize=8.5, fontweight="bold")
+
+    ax.set_xticks(range(len(curve_cols)))
+    ax.set_xticklabels(curve_cols, rotation=90, fontsize=6.8)
+
+    ax.set_xticks(np.arange(-0.5, len(curve_cols), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(df), 1), minor=True)
+    ax.grid(which="minor", color="#cccccc", linestyle="-", linewidth=0.5)
+
+    ax.set_title(
+        f"Matriz Maestra de Disponibilidad de Curvas en Excel ({len(df)} Pozos x {len(curve_cols)} Curvas — Verde='yes', Gris='no')",
+        fontsize=11,
+        fontweight="bold",
+    )
+    fig.tight_layout()
+
+    out_path = output_dir / "excel_curve_availability_matrix.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path
+
+
+def plot_xpt_stations_summary(summary_csv_path: Path, output_dir: Path) -> Path:
+    """
+    Spec 002 (RNF-2): Grafica las estaciones de presión en tiempo (XPT) exportadas en
+    `output/time_logs/xpt_stations_summary.csv` (Profundidad Estacionaria vs. Presión Final).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(summary_csv_path)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 6), dpi=130, sharey=True)
+    colors = {"YPF.SC.CVa-37": "#1f77b4", "YPF.SC.CVa-39": "#e41a1c"}
+
+    for well_name, group in df.groupby("Well"):
+        c = colors.get(str(well_name), "#2ca02c")
+        # Panel 1: Presión de Formación / Sonda vs Profundidad
+        p_col = "CP_SAP_final" if "CP_SAP_final" in group.columns and group["CP_SAP_final"].notna().any() else "CP_HYD_final"
+        if p_col in group.columns:
+            axes[0].scatter(
+                group[p_col],
+                group["Station_Depth_m"],
+                label=f"{well_name} ({len(group)} estaciones)",
+                color=c,
+                s=55,
+                edgecolor="black",
+            )
+        # Panel 2: Duración del ensayo (segundos) vs Profundidad
+        axes[1].barh(
+            group["Station_Depth_m"],
+            group["Duration_s"],
+            height=12.0,
+            color=c,
+            alpha=0.75,
+            edgecolor="black",
+            label=str(well_name),
+        )
+
+    axes[0].invert_yaxis()
+    axes[0].set_ylabel("Profundidad Estacionaria (PDEP_XPT) [m]", fontsize=10, fontweight="bold")
+    axes[0].set_xlabel("Presión Final Estabilizada [psia]", fontsize=9.5, fontweight="bold")
+    axes[0].set_title("Estaciones XPT: Presión vs. Profundidad", fontsize=10, fontweight="bold")
+    axes[0].grid(True, linestyle=":", alpha=0.6)
+    axes[0].legend(loc="lower left", fontsize=8.5)
+
+    axes[1].set_xlabel("Duración del Registro en Tiempo [s]", fontsize=9.5, fontweight="bold")
+    axes[1].set_title("Estaciones XPT: Duración por Estación", fontsize=10, fontweight="bold")
+    axes[1].grid(True, linestyle=":", alpha=0.6)
+
+    fig.suptitle(
+        "Resumen de Registros en Tiempo (XPT) Exportados en output/time_logs/",
+        fontsize=11,
+        fontweight="bold",
+    )
+    fig.tight_layout()
+
+    out_path = output_dir / "xpt_time_stations_overview.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path
+
