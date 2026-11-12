@@ -1,0 +1,14 @@
+# Modelos locales y binarios de inferencia (pesados)
+model/
+
+# Archivos de entrada crudos de pozos (contienen .DLIS/.LIS de >100 MB)
+Input/
+
+# Cachés de Python y pytest
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+.env

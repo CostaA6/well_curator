@@ -1,0 +1,186 @@
+================================================================================
+REPORTE DE PRUEBA Y EXPLORACIÓN .LAS — SPEC 001 (WELL CURATOR)
+Motor GPU: llama.cpp (llama-server.exe Vulkan1 - NVIDIA GeForce RTX 4060)
+Modelo LLM: gemma-4-E4B-it-Q4_K_M.gguf
+================================================================================
+
+POZO: YPF.SC.CVa-19
+  Archivos .LAS: 3 (Profundidad: 3, Tiempo/XPT: 0) | Ignorados no-LAS: 1 (271435_cmo6622.LIS)
+  Metadatos extraídos por Gemma-4-E4B (GPU RTX 4060):
+    - Nombre Pozo       : YPF.SC.CVa-19
+    - UWI               : AR010000694600
+    - Coordenada X      : 4834255.3
+    - Coordenada Y      : 2481797.29
+    - Cota              : 294.14 m (NIVEL DEL TERRENO)
+    - Fuente en Header  : LOC (X) y FL1/FL2 (Y y Z), con referencia de cota de EGL/PDAT
+    - Tiempo Inferencia : 21.91 s
+  Detalle de Archivos .LAS en Profundidad:
+    * 642631381_cv19_NEU.LAS [encoding=cp1252] -> STRT=228.2m, STOP=1494.5m, STEP=0.1m, Curvas=8
+    * 655371479_CVa_19_combo.las [encoding=cp1252] -> STRT=99.974m, STOP=1504.798m, STEP=0.0m, Curvas=17
+    * 655376481_CVa_19poro.las [encoding=cp1252] -> STRT=99.974m, STOP=1504.798m, STEP=0.0m, Curvas=19
+  Curvas únicas en Profundidad (36): AMP3FT, AMP5FT, BIT, BVOL, CAL, CCL, CNCF, CVOL, DT, LSN, LSPD, LTEN, M2P6, M2R1, M2R2, M2R3, M2R6, M2R9, M2RX, MBVI, MBVM, MINMK, MPHE, MPHS, MPRM, NEU, PE, PORA, PORZ, RWAZ, SP, SSN, TT, TT3FT, ZCOR, ZDEN
+  Curvas repetidas detectadas (6):
+    - BIT: BIT en 655371479_CVa_19_combo.las [102.946-1504.798m, step=0.0m]; BIT:2 en 655376481_CVa_19poro.las [102.946-1504.798m, step=0.0m]
+    - M2R1: M2R1 en 655371479_CVa_19_combo.las [120.396-1498.473m, step=0.0m]; M2R1:2 en 655376481_CVa_19poro.las [120.396-1498.473m, step=0.0m]
+    - M2R2: M2R2 en 655371479_CVa_19_combo.las [120.396-1498.473m, step=0.0m]; M2R2:2 en 655376481_CVa_19poro.las [120.396-1498.473m, step=0.0m]
+    - M2R3: M2R3 en 655371479_CVa_19_combo.las [120.396-1498.473m, step=0.0m]; M2R3:2 en 655376481_CVa_19poro.las [120.396-1498.473m, step=0.0m]
+    - M2R6: M2R6 en 655371479_CVa_19_combo.las [120.396-1498.473m, step=0.0m]; M2R6:2 en 655371479_CVa_19_combo.las [120.396-1498.473m, step=0.0m]; M2R6:3 en 655376481_CVa_19poro.las [120.396-1498.473m, step=0.0m]; M2R6:4 en 655376481_CVa_19poro.las [120.396-1498.473m, step=0.0m]
+    - M2R9: M2R9 en 655371479_CVa_19_combo.las [120.396-1498.473m, step=0.0m]; M2R9:2 en 655376481_CVa_19poro.las [120.396-1498.473m, step=0.0m]
+  Imágenes generadas:
+    - YPF.SC.CVa-19_coverage.png
+    - YPF.SC.CVa-19_curves.png
+--------------------------------------------------------------------------------
+
+POZO: YPF.SC.CVa-24
+  Archivos .LAS: 2 (Profundidad: 2, Tiempo/XPT: 0) | Ignorados no-LAS: 1 (263982_cmo6712.LIS)
+  Metadatos extraídos por Gemma-4-E4B (GPU RTX 4060):
+    - Nombre Pozo       : YPF.SC.CVa.-24
+    - UWI               : ar010000701100
+    - Coordenada X      : 4833869.88
+    - Coordenada Y      : 2482090.63
+    - Cota              : 293.36 m (NIVEL DEL TERRENO)
+    - Fuente en Header  : LOC (X), FL1 (Y) y EGL/EPD
+    - Tiempo Inferencia : 15.1 s
+  Detalle de Archivos .LAS en Profundidad:
+    * 655412022_CVa_24_COMBO.las [encoding=cp1252] -> STRT=115.672m, STOP=1455.191m, STEP=0.0m, Curvas=17
+    * 655412023_CVa_24zdl.las [encoding=cp1252] -> STRT=115.672m, STOP=1455.191m, STEP=0.0m, Curvas=17
+  Curvas únicas en Profundidad (24): BIT, BVOL, CAL, CNCF, CVOL, LSN, M2P6, M2R1, M2R2, M2R3, M2R6, M2R9, M2RX, MBVI, MBVM, MPHE, MPHS, MPRM, PE, PORZ, RWAZ, SSN, ZCOR, ZDEN
+  Curvas repetidas detectadas (8):
+    - M2R3: M2R3 en 655412022_CVa_24_COMBO.las [121.996-1449.553m, step=0.0m]; M2R3:2 en 655412023_CVa_24zdl.las [121.996-1449.553m, step=0.0m]
+    - M2R6: M2R6 en 655412022_CVa_24_COMBO.las [121.996-1449.553m, step=0.0m]; M2R6:2 en 655412022_CVa_24_COMBO.las [121.996-1449.553m, step=0.0m]; M2R6:3 en 655412023_CVa_24zdl.las [121.996-1449.553m, step=0.0m]; M2R6:4 en 655412023_CVa_24zdl.las [121.996-1449.553m, step=0.0m]
+    - M2R9: M2R9 en 655412022_CVa_24_COMBO.las [121.996-1449.553m, step=0.0m]; M2R9:2 en 655412023_CVa_24zdl.las [121.996-1449.553m, step=0.0m]
+    - M2RX: M2RX en 655412022_CVa_24_COMBO.las [121.996-1449.553m, step=0.0m]; M2RX:2 en 655412023_CVa_24zdl.las [121.996-1449.553m, step=0.0m]
+    - MBVM: MBVM en 655412022_CVa_24_COMBO.las [220.599-1437.894m, step=0.0m]; MBVM:2 en 655412023_CVa_24zdl.las [220.599-1437.894m, step=0.0m]
+    - MPHE: MPHE en 655412022_CVa_24_COMBO.las [220.599-1437.894m, step=0.0m]; MPHE:2 en 655412023_CVa_24zdl.las [220.599-1437.894m, step=0.0m]
+    - MPHS: MPHS en 655412022_CVa_24_COMBO.las [220.599-1440.332m, step=0.0m]; MPHS:2 en 655412023_CVa_24zdl.las [220.599-1440.332m, step=0.0m]
+    - MPRM: MPRM en 655412022_CVa_24_COMBO.las [220.599-1437.894m, step=0.0m]; MPRM:2 en 655412023_CVa_24zdl.las [220.599-1437.894m, step=0.0m]
+  Imágenes generadas:
+    - YPF.SC.CVa-24_coverage.png
+    - YPF.SC.CVa-24_curves.png
+--------------------------------------------------------------------------------
+
+POZO: YPF.SC.CVa-25
+  Archivos .LAS: 1 (Profundidad: 1, Tiempo/XPT: 0) | Ignorados no-LAS: 1 (263849_cmo6696.LIS)
+  Metadatos extraídos por Gemma-4-E4B (GPU RTX 4060):
+    - Nombre Pozo       : YPF.SC.CVa.-25
+    - UWI               : AR010000701200
+    - Coordenada X      : 4834284.65
+    - Coordenada Y      : 2482048.96
+    - Cota              : 292.88 m (NIVEL DEL TERRENO)
+    - Fuente en Header  : LOC (X), FL1 (Y) y FL2/EPD/EGL (Z)
+    - Tiempo Inferencia : 16.35 s
+  Detalle de Archivos .LAS en Profundidad:
+    * 655412026_CVA25_COMBO.las [encoding=cp1252] -> STRT=115.0m, STOP=1532.0m, STEP=0.5m, Curvas=20
+  Curvas únicas en Profundidad (20): CAL, CNCF, DT, M2P6, M2R1, M2R2, M2R3, M2R6, M2R9, M2RX, MBVI, MPHE, MPHS, PE, PORA, PORZ, RWAZ, SP, ZCOR, ZDEN
+  Curvas repetidas detectadas (0):
+  Imágenes generadas:
+    - YPF.SC.CVa-25_coverage.png
+    - YPF.SC.CVa-25_curves.png
+--------------------------------------------------------------------------------
+
+POZO: YPF.SC.CVa-37
+  Archivos .LAS: 14 (Profundidad: 2, Tiempo/XPT: 12) | Ignorados no-LAS: 10 (290156_CBL_CV-37.PDS, 290157_SONIC_CNL_007PUP.DLIS, 290158_SONIC_CNL_008LUP.DLIS, 290252_YPF.SC.CVa-37_Principal_PUC.DLIS, 290254_YPF.SC.CVa-37_ARREGLO_INDUCTIVO.PDS, 290256_YPF.SC.CVa-37_COMBINADA.PDS, 290258_YPF.SC.CVa-37_DENSIDAD.PDS, 290260_YPF.SC.CVa-37_QUICKLOOK.PDS, 290262_YPF.SC.CVa-37_SONICO.PDS, 290276_YPF.SC.CVa-37_PROBADOR_DE_PRESIONES.PDS)
+  Metadatos extraídos por Gemma-4-E4B (GPU RTX 4060):
+    - Nombre Pozo       : YPF.SC.CVa-37
+    - UWI               : AR0100008500
+    - Coordenada X      : 4834481.39
+    - Coordenada Y      : 2481254.23
+    - Cota              : 293.670013 m (NIVEL DEL TERRENO)
+    - Fuente en Header  : LATI.DEG, LONG.DEG y EPD.M
+    - Tiempo Inferencia : 27.6 s
+  Detalle de Archivos .LAS en Profundidad:
+    * 290159_SONIC_CNL_PRINCIPAL.las [encoding=utf-8] -> STRT=83.058m, STOP=799.1856m, STEP=0.1524m, Curvas=5
+    * 311082_YPF.SC.CVa-37_Principal_PUC.las [encoding=utf-8] -> STRT=102.2604m, STOP=817.4736m, STEP=0.1524m, Curvas=31
+  Detalle de Archivos .LAS en Tiempo (12):
+    * 290263_YPF.SC.CVa-37_XPT_021LTC.las (@ 738.46m, 2447.0-3439.0s)
+    * 290264_YPF.SC.CVa-37_XPT_023LTC.las (@ 715.0m, 3956.0-4607.0s)
+    * 290265_YPF.SC.CVa-37_XPT_024LTC.las (@ 703.99m, 4708.0-5045.0s)
+    * 290266_YPF.SC.CVa-37_XPT_025LTC.las (@ 694.99m, 5151.0-5687.0s)
+    * 290267_YPF.SC.CVa-37_XPT_027LTC.las (@ 683.66m, 6037.0-6296.0s)
+    * 290268_YPF.SC.CVa-37_XPT_029LTC.las (@ 651.51m, 6536.0-7088.0s)
+    * 290269_YPF.SC.CVa-37_XPT_030LTC.las (@ 488.5m, 7382.0-7672.0s)
+    * 290270_YPF.SC.CVa-37_XPT_032LTC.las (@ 401.0m, 8274.0-8508.0s)
+    * 290271_YPF.SC.CVa-37_XPT_033LTC.las (@ 376.49m, 8601.0-8823.0s)
+    * 290272_YPF.SC.CVa-37_XPT_034LTC.las (@ 315.94m, 8980.0-9350.0s)
+    * 290273_YPF.SC.CVa-37_XPT_035LTC.las (@ 309.99m, 9422.0-9607.0s)
+    * 290274_YPF.SC.CVa-37_XPT_038LTC.las (@ 298.49m, 10070.0-10250.0s)
+  Curvas únicas en Profundidad (36): AHF10, AHF90, AHFCO90, AHSFI, AHT10, AHT20, AHT30, AHT60, AHT90, AHTD2, BS, CBL, CCL, CFTC, DPHZ, DT, HCAL, HDRA, IHV, ITT, LC01, LC02, PEFZ, RHOZ, RWA, SP, SPHI, SVEL, TENS, TNPH, TT, TT1, TT2, TT3, TT4, TTSL
+  Curvas repetidas detectadas (0):
+  Imágenes generadas:
+    - YPF.SC.CVa-37_coverage.png
+    - YPF.SC.CVa-37_curves.png
+--------------------------------------------------------------------------------
+
+POZO: YPF.SC.CVa-38
+  Archivos .LAS: 3 (Profundidad: 3, Tiempo/XPT: 0) | Ignorados no-LAS: 10 (248250_YPF.SC.CVa-38_CBL_SONIC_006PUP.DLIS, 269863_YPF.SC.VCa-38_PUNZADO_AUXILIAR.PDS, 284672_YPF_SC_CV_a-38_TRAMO_PRINCIPAL_024PUP.DLIS, 284673_YPF_SC_CV_a-38_TRAMO_REPETIDO_027PUP.DLIS, 284675_YPF_SC_CVa-38_ARREGLO_INDUCTIVO.pds, 284676_YPF_SC_CVa-38_COMBINADA.pds, 284677_YPF_SC_CVa-38_DENSIDAD.pds, 284679_YPF_SC_CVa-38_QUICKLOOK.pds, 284681_YPF_SC_CVa-38_SONICO.pds, 286245_YPF.SC.CVa-38_CONTROL_CEMENTO_9.625.PDS)
+  Metadatos extraídos por Gemma-4-E4B (GPU RTX 4060):
+    - Nombre Pozo       : YPF.SC.CVa-38
+    - UWI               : AR0100008327
+    - Coordenada X      : 4834449.98
+    - Coordenada Y      : 2481587.54
+    - Cota              : 292.0 m (NIVEL DEL TERRENO)
+    - Fuente en Header  : LATI.DEG/LONG.DEG y EPD.M
+    - Tiempo Inferencia : 25.7 s
+  Detalle de Archivos .LAS en Profundidad:
+    * 284670_YPF_SC_CV_a-38_CALIPER_024PUP.las [encoding=utf-8] -> STRT=111.5568m, STOP=1418.6916m, STEP=0.1524m, Curvas=2
+    * 284671_YPF_SC_CV_a-38_TRAMO_PRINCIPAL_024PUP.las [encoding=utf-8] -> STRT=111.5568m, STOP=1418.6916m, STEP=0.1524m, Curvas=31
+    * 286243_YPF.SC.CVa-38_CBL_SONIC_006PUP.las [encoding=utf-8] -> STRT=4.4196m, STOP=118.7196m, STEP=0.1524m, Curvas=7
+  Curvas únicas en Profundidad (37): AHF10, AHF90, AHFCO90, AHSFI, AHT10, AHT20, AHT30, AHT60, AHT90, AHTD2, BS, CBL, CBLF, CBSL, CCL, DPHZ, DT, HCAL, HDRA, IHV, ITT, LC01, LC02, PEFZ, RHOZ, RWA, SP, SPHI, SVEL, TENS, TNPH, TT, TT1, TT2, TT3, TT4, TTSL
+  Curvas repetidas detectadas (3):
+    - BS: BS en 284670_YPF_SC_CV_a-38_CALIPER_024PUP.las [111.5568-1418.6916m, step=0.1524m]; BS:2 en 284671_YPF_SC_CV_a-38_TRAMO_PRINCIPAL_024PUP.las [111.5568-1418.6916m, step=0.1524m]
+    - HCAL: HCAL en 284670_YPF_SC_CV_a-38_CALIPER_024PUP.las [111.5568-1418.6916m, step=0.1524m]; HCAL:2 en 284671_YPF_SC_CV_a-38_TRAMO_PRINCIPAL_024PUP.las [111.5568-1418.6916m, step=0.1524m]
+    - TENS: TENS en 284671_YPF_SC_CV_a-38_TRAMO_PRINCIPAL_024PUP.las [111.5568-1418.6916m, step=0.1524m]; TENS:2 en 286243_YPF.SC.CVa-38_CBL_SONIC_006PUP.las [4.4196-118.7196m, step=0.1524m]
+  Imágenes generadas:
+    - YPF.SC.CVa-38_coverage.png
+    - YPF.SC.CVa-38_curves.png
+--------------------------------------------------------------------------------
+
+POZO: YPF.SC.CVa-39
+  Archivos .LAS: 9 (Profundidad: 3, Tiempo/XPT: 6) | Ignorados no-LAS: 6 (284689_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.DLIS, 284695_YPF.SC.CVa-39_DENSIDAD.PDS, 285193_XPT_TLD_MCFL_CNL_048LTC.DLIS, 285194_XPT_TLD_MCFL_CNL_049LTC.DLIS, 285195_XPT_TLD_MCFL_CNL_053LTC.DLIS, 285197_YPF.SC.CVa-39_Presiones.PDS)
+  Metadatos extraídos por Gemma-4-E4B (GPU RTX 4060):
+    - Nombre Pozo       : YPF.SC.CVa-39
+    - UWI               : AR0100008372
+    - Coordenada X      : 4834487.45
+    - Coordenada Y      : 2481883.31
+    - Cota              : 292.35001 m (NIVEL DEL TERRENO)
+    - Fuente en Header  : LATI.DEG, LONG.DEG y EPD.M
+    - Tiempo Inferencia : 26.74 s
+  Detalle de Archivos .LAS en Profundidad:
+    * 284685_YPF.SC.CVa-39_CALIBRE_AIT_TLD_CNL_011PUC.las [encoding=utf-8] -> STRT=7.9248m, STOP=124.8156m, STEP=0.1524m, Curvas=5
+    * 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [encoding=utf-8] -> STRT=7.9248m, STOP=124.8156m, STEP=0.1524m, Curvas=22
+    * 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [encoding=utf-8] -> STRT=50.1396m, STOP=115.062m, STEP=0.1524m, Curvas=22
+  Detalle de Archivos .LAS en Tiempo (6):
+    * 285198_XPT_TLD_MCFL_CNL_036LTC.las (@ 730.47m, 5699.0-5872.0s)
+    * 285199_XPT_TLD_MCFL_CNL_042LTC.las (@ 875.96m, 7193.0-7829.0s)
+    * 285200_XPT_TLD_MCFL_CNL_048LTC.las (@ 1263.95m, 11068.0-11819.0s)
+    * 285201_XPT_TLD_MCFL_CNL_027LTC.las (@ 645.96m, 2897.0-3084.0s)
+    * 285202_XPT_TLD_MCFL_CNL_045LTC.las (@ 1185.97m, 9070.0-9886.0s)
+    * 310830_XPT_TLD_MCFL_CNL_039LTC.las (@ 749.95m, 6432.0-6655.0s)
+  Curvas únicas en Profundidad (23): AF10, AF90, AFCO90, AFD2, AT10, AT20, AT30, AT60, AT90, BS, DPHZ, HCAL, HDRA, ICV, IHV, LC01, LC02, PEFZ, RHOZ, RWA, SP, TENS, TNPH
+  Curvas repetidas detectadas (22):
+    - AF10: AF10 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AF10:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AF90: AF90 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AF90:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AFCO90: AFCO90 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AFCO90:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AFD2: AFD2 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AFD2:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AT10: AT10 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AT10:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AT20: AT20 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AT20:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AT30: AT30 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AT30:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AT60: AT60 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AT60:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - AT90: AT90 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; AT90:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - BS: BS en 284685_YPF.SC.CVa-39_CALIBRE_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; BS:2 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; BS:3 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - DPHZ: DPHZ en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; DPHZ:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - HCAL: HCAL en 284685_YPF.SC.CVa-39_CALIBRE_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; HCAL:2 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; HCAL:3 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - HDRA: HDRA en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-123.2916m, step=0.1524m]; HDRA:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-113.538m, step=0.1524m]
+    - IHV: IHV en 284685_YPF.SC.CVa-39_CALIBRE_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; IHV:2 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; IHV:3 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - LC01: LC01 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; LC01:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - LC02: LC02 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; LC02:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - PEFZ: PEFZ en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-123.2916m, step=0.1524m]; PEFZ:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-113.538m, step=0.1524m]
+    - RHOZ: RHOZ en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-123.2916m, step=0.1524m]; RHOZ:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-113.538m, step=0.1524m]
+    - RWA: RWA en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; RWA:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - SP: SP en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; SP:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - TENS: TENS en 284685_YPF.SC.CVa-39_CALIBRE_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; TENS:2 en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; TENS:3 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+    - TNPH: TNPH en 284686_YPF.SC.CVa-39_PRINCIPAL_AIT_TLD_CNL_011PUC.las [7.9248-124.8156m, step=0.1524m]; TNPH:2 en 284687_YPF.SC.CVa-39_REPETIDA_AIT_TLD_CNL_013PUC.las [50.1396-115.062m, step=0.1524m]
+  Imágenes generadas:
+    - YPF.SC.CVa-39_coverage.png
+    - YPF.SC.CVa-39_curves.png
+--------------------------------------------------------------------------------
