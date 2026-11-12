@@ -11,10 +11,13 @@
 
 ## 2. Algoritmo y Decisiones Técnicas
 
-### A. Separación de encabezado y lectura con `lasio` (RF-1, RF-2, RF-3)
+### A. Corte puro de encabezado con "Doble Seguro" y separación de responsabilidades (RF-1, RF-2, RF-3)
 - Se listan los archivos de la carpeta del pozo filtrando `path.suffix.lower() == ".las"`.
-- Para el bloque del LLM: se lee el archivo línea por línea (intentando `utf-8` y cayendo a `latin-1`/`cp1252`) deteniéndose en cuanto una línea comienza con `~A` (case-insensitive). Así jamás se carga ni se envía la matriz numérica al LLM.
-- Para el análisis de curvas y datos: se abre con `lasio.read(filepath, encoding="latin-1")` (o autodetectado), reemplazando el valor `NULL` (ej. `-999.25`) por `np.nan`.
+- **Para el bloque del LLM (Sin `lasio`)**: Python lee el archivo como texto plano (intentando `utf-8`, `cp1252`, `latin-1`) y corta el encabezado con `extract_raw_header_before_ascii` usando **3 barreras de seguridad**:
+  1. Línea que comienza con `~A`, `~ A`, `~ASCII` o `~LOG_DATA`.
+  2. Fila numérica pura ($\ge 3$ números flotantes sin `:`) luego de `~Curve` (por si un archivo de campo omitió `~A`).
+  3. Límite duro de `500` líneas por encabezado.
+- **Para los valores de las curvas (`lasio` solo para datos)**: `lasio` se utiliza exclusivamente para cargar la tabla numérica (`las.df()`) y las unidades de curvas, enmascarando el valor nulo (`-999.25`) como `np.nan`.
 
 ### B. Clasificación `DEPTH` vs `TIME` (RF-4)
 - Se inspecciona la primera curva (`las.curves[0]`) y el parámetro `STRT` en `~Well`:

@@ -15,9 +15,11 @@ Aplicativo local en Python + LLM (`Gemma-4-E4B` GGUF en GPU RTX 4060) con interf
 - Tests: `$env:PYTHONPATH="."; python -m pytest`
 
 ## Reglas de dominio / trampas conocidas (.LAS)
-- **No enviar datos crudos al LLM**: Python (`lasio`/parser) agrupa por carpeta/archivo y arma un bloque de texto solo con encabezados (`~Version`, `~Well`, `~Parameter`, `~Curve`) antes de `~A`.
-- **Metadatos objetivo**: Nombre del pozo, UWI, Coordenada X, Coordenada Y, **Cota (Z / EPD / EGL)** y disponibilidad de curvas.
-- **Codificación y bug de `:` en `lasio`**: abrir `.las` con tolerancia a `latin-1`/`cp1252`. En `~Parameter`, cuando un valor incluye `:` (ej. `FL1 . Y: 2.482.090,63 : Field Location 1`), `lasio` corta en el primer `:` y mete el número en `descr`; siempre recomponer haciendo `rsplit(":", 1)`.
+- **Separación de responsabilidades (Texto Crudo -> LLM | Curvas -> `lasio`)**:
+  - **Encabezados (sin `lasio`)**: Python corta el texto crudo antes de `~A` con triple barrera de seguridad (1: `~A`/`~ASCII`/`~LOG_DATA`, 2: detector de fila numérica $\ge 3$ floats tras `~Curve`, 3: tope de 500 líneas) y se lo envía directo al LLM. Así evitamos que `lasio` trunque valores con doble `:` como `FL1 . Y: 2.482.090,63 : Field Location 1`.
+  - **Curvas numéricas (`lasio`)**: `lasio` se usa exclusivamente para leer las columnas de datos (`las.df()`) y unidades debajo de `~A`.
+- **Metadatos objetivo**: Nombre del pozo, UWI (regularizado en mayúsculas), Coordenada X, Coordenada Y, **Cota (Z / EPD / EGL)** y disponibilidad de curvas.
+- **Codificación**: abrir `.las` con tolerancia a `utf-8`, `cp1252` y `latin-1`.
 - **Registros en Tiempo vs. Profundidad**: existen `.las` indexados en tiempo (`STRT.S` / curva `TIME.S`, ej. estaciones de presión `XPT`). Deben detectarse y separarse de los registros en profundidad (`DEPT.M`) antes de armar la grilla común.
 - **Curvas repetidas**: distinguir con `:2`, `:3` (incluso dentro del mismo `.las`) y permitir al usuario decidir cómo tratarlas (conservar, fusionar o descartar tramo repetido).
 

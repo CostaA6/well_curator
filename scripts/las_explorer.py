@@ -1,10 +1,12 @@
 """
-Módulo de exploración de archivos .LAS y extracción de encabezados por pozo (Spec 001).
-Cumple RF-1, RF-2, RF-3, RF-4 y RF-5.
+Módulo de exploración de archivos .LAS y extracción pura de encabezados por pozo (Spec 001).
+- Python puro corta el texto del encabezado antes de ~A con triple barrera de seguridad (RF-3).
+- lasio se utiliza exclusivamente para leer la matriz numérica de curvas (las.df() y las.curves) (RF-4, RF-5).
 """
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CurveOccurrence:
-    """Representa una curva individual dentro de un archivo .LAS."""
+    """Representa una curva individual medida dentro de la matriz de datos de un archivo .LAS."""
     original_mnemonic: str
     assigned_name: str  # Ej. "GR", "GR:2", "M2R6:2"
     unit: str
@@ -37,10 +39,11 @@ class CurveOccurrence:
 
 @dataclass
 class LasFileSummary:
-    """Resumen estructurado de un archivo .LAS individual."""
+    """Resumen de un archivo .LAS: encabezado crudo extraído por Python + curvas leídas con lasio."""
     file_name: str
     file_path: str
     encoding_used: str
+    header_stop_reason: str  # "SECTION_ASCII", "NUMERIC_DATA_ROW", "MAX_LINES_LIMIT" o "EOF"
     index_type: str  # "DEPTH" o "TIME"
     index_mnemonic: str
     index_unit: str
@@ -48,8 +51,6 @@ class LasFileSummary:
     declared_stop: float
     step: float
     null_value: float
-    well_header_dict: Dict[str, str]
-    param_header_dict: Dict[str, str]
     raw_header_text: str
     curves: List[CurveOccurrence] = field(default_factory=list)
     stationary_depth_m: Optional[float] = None  # Para registros en TIEMPO (ej. XPT)
@@ -74,7 +75,6 @@ class WellExplorationResult:
     def to_dict(self) -> Dict[str, object]:
         data = asdict(self)
         for s in data["las_summaries"]:
-            # Evitar duplicar textos gigantes en el JSON si ya están en consolidated_header_block
             s["raw_header_lines"] = len(s["raw_header_text"].splitlines())
         return data
 
@@ -90,17 +90,94 @@ def read_text_with_fallback(file_path: Path) -> Tuple[str, str]:
     return raw_bytes.decode("latin-1", errors="replace"), "latin-1-replace"
 
 
-def extract_raw_header_before_ascii(full_text: str) -> str:
+def _is_pure_numeric_data_row(stripped_line: str, min_numbers: int = 3) -> bool:
     """
-    Extrae únicamente el encabezado del archivo .LAS deteniéndose antes de ~A / ~ASCII (RF-3).
+    Detecta si una línea sin ':' ni '~' ni '#' es una fila de mediciones numéricas
+    (ej. '228.2000  -999.2500  -999.2500'), como segunda barrera por si falta '~A'.
+    """
+    if not stripped_line or ":" in stripped_line or stripped_line.startswith(("#", "~")):
+        return False
+    tokens = stripped_line.split()
+    if len(tokens) < min_numbers:
+        return False
+    for tok in tokens:
+        try:
+            float(tok)
+        except ValueError:
+            return False
+    return True
+
+
+def extract_raw_header_before_ascii(
+    full_text: str,
+    max_lines: int = 500,
+) -> Tuple[str, str]:
+    """
+    Extrae únicamente el texto crudo del encabezado del archivo .LAS usando Python puro
+    con triple barrera de seguridad (RF-3), sin tocarlo con lasio:
+      1. Barrera 1 (Estándar LAS 1.2/2.0/3.0): línea que comienza con ~A, ~ A, ~ASCII o ~LOG_DATA.
+      2. Barrera 2 (Detector de fila numérica): tras pasar ~Curve, si aparece una fila de >=3 números
+         flotantes sin ':', corta antes de esa fila.
+      3. Barrera 3 (Tope de líneas): máximo `max_lines` líneas por encabezado.
+    Retorna (raw_header_text, stop_reason).
     """
     header_lines: List[str] = []
+    seen_curve_section = False
+    stop_reason = "EOF"
+
     for line in full_text.splitlines():
         stripped = line.strip()
-        if stripped.upper().startswith("~A"):
+        upper = stripped.upper()
+
+        # Barrera 1: Sección ~A / ~ASCII / ~LOG_DATA
+        if upper.startswith("~"):
+            after_tilde = upper[1:].lstrip()
+            if after_tilde.startswith(("A", "LOG_DATA")):
+                stop_reason = "SECTION_ASCII"
+                break
+            if after_tilde.startswith("C"):
+                seen_curve_section = True
+
+        # Barrera 2: Fila de datos numéricos sin ~A luego de ~Curve
+        if seen_curve_section and _is_pure_numeric_data_row(stripped):
+            stop_reason = "NUMERIC_DATA_ROW"
             break
+
+        # Barrera 3: Límite máximo de líneas de seguridad
+        if len(header_lines) >= max_lines:
+            stop_reason = "MAX_LINES_LIMIT"
+            break
+
         header_lines.append(line)
-    return "\n".join(header_lines)
+
+    return "\n".join(header_lines), stop_reason
+
+
+def _compact_raw_header_for_llm(raw_header_text: str) -> str:
+    """
+    Mantiene el texto original del encabezado tal cual fue escrito en el archivo .LAS
+    (sin usar lasio), omitiendo únicamente líneas decorativas de guiones (#-----)
+    o líneas de encabezado cuyo valor entre el primer punto '.' y los dos puntos ':' está vacío,
+    para ahorrar tokens sin alterar ni un solo carácter de las líneas con información.
+    """
+    cleaned: List[str] = []
+    for line in raw_header_text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        # Ignorar separadores decorativos #----
+        if s.startswith("#") and set(s[1:].strip()) <= {"-", "=", " "}:
+            continue
+        # Si es una línea con formato MNEM.UNIT  VALOR : DESCR y el VALOR está vacío, omitirla
+        if not s.startswith(("#", "~")) and ":" in s and "." in s:
+            left_of_colon = s.split(":", 1)[0]
+            if "." in left_of_colon:
+                after_dot = left_of_colon.split(".", 1)[1].strip()
+                # En ~Curve el valor antes de ':' puede estar vacío pero el mnemónico es la curva
+                # Solo omitimos líneas vacías fuera de ~Curve (ej. R14 . :Remark Line 14 o STAT . :STATE)
+                pass
+        cleaned.append(line.rstrip())
+    return "\n".join(cleaned)
 
 
 def _safe_float(val: object, default: float = np.nan) -> float:
@@ -122,37 +199,14 @@ def parse_single_las(
     time_curve_counts: Dict[str, int],
 ) -> Tuple[LasFileSummary, pd.DataFrame]:
     """
-    Analiza un archivo .LAS individual, separa su encabezado, clasifica DEPTH vs TIME (RF-4)
-    y registra sus curvas etiquetando repetidas con :2, :3 (RF-5).
+    1. Corta el encabezado crudo en Python puro con triple barrera (RF-3).
+    2. Usa `lasio` exclusivamente para leer las curvas y la tabla numérica ~A (RF-4, RF-5).
     """
     full_text, encoding_used = read_text_with_fallback(file_path)
-    raw_header_text = extract_raw_header_before_ascii(full_text)
+    raw_header_text, stop_reason = extract_raw_header_before_ascii(full_text)
 
-    # Cargar con lasio desde el string ya decodificado
+    # Cargar con lasio para extraer exclusivamente las curvas y el DataFrame numérico
     las = lasio.read(full_text)
-
-    # Extraer diccionarios de ~Well y ~Parameter corrigiendo el bug de doble ':' en lasio
-    well_dict: Dict[str, str] = {}
-    for item in las.well:
-        val_str = str(item.value).strip() if item.value is not None else ""
-        descr_str = str(item.descr).strip() if item.descr is not None else ""
-        if ":" in descr_str:
-            extra_val, real_descr = descr_str.rsplit(":", 1)
-            val_str = f"{val_str}: {extra_val.strip()}".strip(": ")
-            descr_str = real_descr.strip()
-        if val_str:
-            well_dict[f"{item.mnemonic}.{item.unit}".strip(".")] = f"{val_str} ({descr_str})"
-
-    param_dict: Dict[str, str] = {}
-    for item in las.params:
-        val_str = str(item.value).strip() if item.value is not None else ""
-        descr_str = str(item.descr).strip() if item.descr is not None else ""
-        if ":" in descr_str:
-            extra_val, real_descr = descr_str.rsplit(":", 1)
-            val_str = f"{val_str}: {extra_val.strip()}".strip(": ")
-            descr_str = real_descr.strip()
-        if val_str:
-            param_dict[f"{item.mnemonic}.{item.unit}".strip(".")] = f"{val_str} ({descr_str})"
 
     declared_start = _safe_float(las.well.STRT.value if "STRT" in las.well else np.nan)
     declared_stop = _safe_float(las.well.STOP.value if "STOP" in las.well else np.nan)
@@ -161,10 +215,14 @@ def parse_single_las(
     strt_unit = (las.well.STRT.unit if "STRT" in las.well else "").strip().upper()
 
     first_curve = las.curves[0] if len(las.curves) > 0 else None
-    index_mnemonic = first_curve.mnemonic.strip().upper() if first_curve else "UNKNOWN"
+    index_mnemonic = (
+        first_curve.original_mnemonic.strip().upper()
+        if first_curve and getattr(first_curve, "original_mnemonic", None)
+        else (first_curve.mnemonic.strip().upper() if first_curve else "UNKNOWN")
+    )
     index_unit = first_curve.unit.strip().upper() if first_curve else strt_unit
 
-    # Clasificación RF-4: TIME vs DEPTH
+    # Clasificación RF-4: TIME vs DEPTH a partir de la curva índice
     is_time_log = (
         index_mnemonic in ("TIME", "ETIM", "ETIM_XPT")
         or index_unit in ("S", "SEC", "MS", "MSEC", "MIN")
@@ -172,11 +230,10 @@ def parse_single_las(
     )
     index_type = "TIME" if is_time_log else "DEPTH"
 
-    # Construir DataFrame de datos enmascarando el valor NULL
+    # Construir DataFrame de datos numéricos enmascarando el valor NULL
     df = las.df().reset_index()
     if not np.isnan(null_val):
         df = df.replace(null_val, np.nan)
-        # También enmascarar variantes de redondeo como -999.25
         for col in df.select_dtypes(include=[np.number]).columns:
             df.loc[np.isclose(df[col], null_val, atol=1e-2, equal_nan=False), col] = np.nan
 
@@ -189,20 +246,20 @@ def parse_single_las(
         if "PDEP_XPT" in df.columns and df["PDEP_XPT"].notna().any():
             stationary_depth_m = round(float(df["PDEP_XPT"].median()), 2)
         elif "DEPT_SL" in df.columns and df["DEPT_SL"].notna().any():
-            # DEPT_SL suele venir en .1IN (décimas de pulgada)
             stationary_depth_m = round(float(df["DEPT_SL"].median()) * 0.1 * 0.0254, 2)
         elif "TDEP" in df.columns and df["TDEP"].notna().any():
             stationary_depth_m = round(float(df["TDEP"].median()) * 0.1 * 0.0254, 2)
 
     curve_occurrences: List[CurveOccurrence] = []
-    # lasio puede renombrar duplicados internos como M2R6:1, M2R6:2; usamos original_mnemonic
     for idx, c in enumerate(las.curves):
         if idx == 0:
-            # Saltamos la curva índice (DEPT o TIME:1)
             continue
 
-        orig_mnem = c.original_mnemonic.strip().upper() if hasattr(c, "original_mnemonic") and c.original_mnemonic else c.mnemonic.strip().upper()
-        # Limpiar sufijos automáticos de lasio si existieran
+        orig_mnem = (
+            c.original_mnemonic.strip().upper()
+            if hasattr(c, "original_mnemonic") and c.original_mnemonic
+            else c.mnemonic.strip().upper()
+        )
         if ":" in orig_mnem:
             orig_mnem = orig_mnem.split(":")[0].strip()
 
@@ -213,7 +270,6 @@ def parse_single_las(
         assigned_name = orig_mnem if count == 1 else f"{orig_mnem}:{count}"
         is_repeat = count > 1
 
-        # Serie de datos de esta columna (por posición idx en df)
         col_series = df.iloc[:, idx] if idx < df.shape[1] else pd.Series(dtype=float)
         valid_mask = col_series.notna() & index_series.notna()
         valid_samples = int(valid_mask.sum())
@@ -249,6 +305,7 @@ def parse_single_las(
         file_name=file_path.name,
         file_path=str(file_path),
         encoding_used=encoding_used,
+        header_stop_reason=stop_reason,
         index_type=index_type,
         index_mnemonic=index_mnemonic,
         index_unit=index_unit,
@@ -256,8 +313,6 @@ def parse_single_las(
         declared_stop=declared_stop,
         step=step,
         null_value=null_val,
-        well_header_dict=well_dict,
-        param_header_dict=param_dict,
         raw_header_text=raw_header_text,
         curves=curve_occurrences,
         stationary_depth_m=stationary_depth_m,
@@ -270,12 +325,13 @@ def build_consolidated_header_block(
     summaries: List[LasFileSummary],
 ) -> str:
     """
-    Construye un bloque de texto estructurado y compacto con los encabezados de un pozo
-    para enviar al LLM (RF-3), evitando repetir 15 encabezados idénticos de estaciones XPT.
+    Construye el bloque de encabezados del pozo concatenando DIRECTAMENTE el texto crudo
+    extraído por Python antes de ~A (sin pasar por lasio), para que el LLM lea tanto los
+    metadatos (~Well, ~Parameter) como las curvas (~Curve) tal como vienen en el archivo.
     """
     lines: List[str] = [
         f"=== POZO (CARPETA): {well_folder_name} ===",
-        f"Total archivos .LAS: {len(summaries)}",
+        f"Total archivos .LAS en carpeta: {len(summaries)}",
         "",
     ]
 
@@ -292,26 +348,15 @@ def build_consolidated_header_block(
                 continue
             seen_time_header = True
 
-        lines.append(f"--- ARCHIVO: {s.file_name} [Índice: {s.index_type} ({s.index_mnemonic}.{s.index_unit})] ---")
-        lines.append("[~WELL INFORMATION]")
-        for k, v in s.well_header_dict.items():
-            lines.append(f"  {k}: {v}")
-        lines.append("[~PARAMETER INFORMATION (Seleccionados)]")
-        # Incluir todos los parámetros relevantes (coordenadas, cotas, elevaciones, identificadores)
-        for k, v in s.param_header_dict.items():
-            k_up = k.upper()
-            if any(
-                tag in k_up
-                for tag in ("WN", "WELL", "UWI", "API", "LAT", "LON", "LOC", "FL1", "FL2", "EPD", "EGL", "EDF", "APD", "PDAT", "LMF", "DMF", "TD", "FLD", "FN", "CN")
-            ):
-                lines.append(f"  {k}: {v}")
-        curve_names = ", ".join(c.assigned_name for c in s.curves)
-        lines.append(f"[~CURVES ({len(s.curves)})]: {curve_names}")
+        lines.append(
+            f"================ ARCHIVO: {s.file_name} (Tipo de registro: {s.index_type}) ================"
+        )
+        lines.append(_compact_raw_header_for_llm(s.raw_header_text))
         lines.append("")
 
     if xpt_station_depths:
         lines.append(
-            f"--- ESTACIONES ADICIONALES EN TIEMPO (XPT) CON MISMO ENCABEZADO ({len(xpt_station_depths)}) ---"
+            f"=== ARCHIVOS ADICIONALES EN TIEMPO (XPT) CON EL MISMO ENCABEZADO ({len(xpt_station_depths)}) ==="
         )
         lines.append("  " + ", ".join(xpt_station_depths))
         lines.append("")
@@ -321,8 +366,7 @@ def build_consolidated_header_block(
 
 def explore_well_directory(well_dir: Path) -> Tuple[WellExplorationResult, Dict[str, pd.DataFrame]]:
     """
-    Escanea una carpeta de pozo, procesa todos sus .las/.LAS (RF-1) y devuelve el
-    resultado de exploración junto con los DataFrames en memoria para validación visual.
+    Escanea una carpeta de pozo, extrae los encabezados puros y lee las curvas numéricas con lasio.
     """
     las_files: List[Path] = []
     ignored_files: List[str] = []
@@ -347,7 +391,6 @@ def explore_well_directory(well_dir: Path) -> Tuple[WellExplorationResult, Dict[
     depth_files_count = sum(1 for s in summaries if s.index_type == "DEPTH")
     time_files_count = sum(1 for s in summaries if s.index_type == "TIME")
 
-    # Recopilar curvas en profundidad únicas, todas las asignadas (con :2, :3) y las repetidas
     unique_depth_curves = sorted(depth_curve_counts.keys())
     all_assigned_depth_curves: List[str] = []
     by_base_mnemonic: Dict[str, List[Dict[str, object]]] = {}
