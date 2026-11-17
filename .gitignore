@@ -4,6 +4,9 @@ model/
 # Archivos de entrada crudos de pozos (contienen .DLIS/.LIS de >100 MB)
 Input/
 
+# Logs de servidor locales
+logs/
+
 # Cachés de Python y pytest
 __pycache__/
 *.py[cod]

@@ -1,0 +1,30 @@
+{
+  "profile_name": "golfo_san_jorge_faja2",
+  "description": "Cuenca del Golfo San Jorge (Santa Cruz / Chubut Oeste) — Gauss-Krüger POSGAR 2007 Faja 2 (EPSG:5344).",
+  "target_depth_unit": "M",
+  "prioritize_gauss_kruger": true,
+  "forced_epsg": "EPSG:5344",
+  "forced_gk_faja": 2,
+  "coord_x_range": [2400000, 2600000],
+  "coord_y_range": [4700000, 5050000],
+  "coord_decimals": 0,
+  "uwi_pad_rules": [
+    {
+      "pattern": "^AR\\d{10}$",
+      "append": "00"
+    }
+  ],
+  "well_name_regex_replacements": [
+    ["\\.a-", "a-"],
+    ["\\.-", "-"]
+  ],
+  "prompt_domain_hints": "Contexto de cuenca (Golfo San Jorge - Argentina): las coordenadas planas Gauss-Krüger Faja 2 tienen Este (XWELL) cercano a ~2481000 y Norte (YWELL) cercano a ~4834000. El UWI oficial suele tener formato AR01 seguido de 10 dígitos (ej. AR010000837200). Si un archivo preliminar tiene un código interno (ej. SAI-369) o UWI truncado, prioriza el UWI oficial completo de las corridas definitivas.",
+  "pressure_summary_mnemonics": [
+    "MTEP_SAP",
+    "MTEP_HYD",
+    "CP_SAP",
+    "CP_HYD",
+    "PCO_HYD",
+    "PTV_XPT"
+  ]
+}

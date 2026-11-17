@@ -7,6 +7,7 @@ Módulo de homogeneización en grilla común de profundidad y exportación a `ou
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,8 +18,8 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 
+from scripts.field_profiles import FieldProfile, load_field_profile, normalize_well_metadata
 from scripts.las_explorer import LasFileSummary, WellExplorationResult
-from scripts.llm_extractor import normalize_well_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,8 @@ class WellExportSummary:
     """Resumen del proceso de exportación de un pozo hacia `output/`."""
     well_name: str
     uwi: str
-    coord_x: int
-    coord_y: int
+    coord_x: float | int
+    coord_y: float | int
     elevation: float
     grid_start: float
     grid_stop: float
@@ -41,6 +42,8 @@ class WellExportSummary:
     exported_depth_curves: List[str]
     depth_csv_path: Path
     time_csv_paths: List[Path] = field(default_factory=list)
+    crs_used: str = ""
+    coord_resolution_note: str = ""
 
 
 def compute_effective_step(summary: LasFileSummary, df: pd.DataFrame) -> float:
@@ -118,9 +121,9 @@ def build_unified_well_depth_df(
     grid_depths = np.round(grid_start + np.arange(num_steps + 1) * grid_step, 4)
 
     well_name = str(normalized_meta["nombre_pozo"])
-    uwi = str(normalized_meta["uwi"] or "")
-    xwell = int(round(float(normalized_meta["coord_x"]))) if normalized_meta.get("coord_x") is not None else 0
-    ywell = int(round(float(normalized_meta["coord_y"]))) if normalized_meta.get("coord_y") is not None else 0
+    uwi = str(normalized_meta.get("uwi") or "")
+    xwell = normalized_meta.get("coord_x") if normalized_meta.get("coord_x") is not None else 0
+    ywell = normalized_meta.get("coord_y") if normalized_meta.get("coord_y") is not None else 0
     cota = round(float(normalized_meta["cota"]), 2) if normalized_meta.get("cota") is not None else np.nan
 
     base_data: Dict[str, object] = {
@@ -196,9 +199,10 @@ def export_well_time_logs(
     well_dfs: Dict[str, pd.DataFrame],
     normalized_meta: Dict[str, object],
     output_dir: Path,
+    field_profile: Optional[FieldProfile] = None,
 ) -> Tuple[List[Path], List[Dict[str, object]]]:
     """
-    Exporta los archivos .LAS indexados en tiempo (ej. estaciones de presión XPT)
+    Exporta los archivos .LAS indexados en tiempo (ej. estaciones de presión XPT/MDT/RFT)
     a `output/time_logs/<Well>/` y retorna las filas para `xpt_stations_summary.csv` (Spec 002 - RF-6).
     """
     time_summaries = [s for s in well.las_summaries if s.index_type == "TIME"]
@@ -206,9 +210,9 @@ def export_well_time_logs(
         return [], []
 
     well_name = str(normalized_meta["nombre_pozo"])
-    uwi = str(normalized_meta["uwi"] or "")
-    xwell = int(round(float(normalized_meta["coord_x"]))) if normalized_meta.get("coord_x") is not None else 0
-    ywell = int(round(float(normalized_meta["coord_y"]))) if normalized_meta.get("coord_y") is not None else 0
+    uwi = str(normalized_meta.get("uwi") or "")
+    xwell = normalized_meta.get("coord_x") if normalized_meta.get("coord_x") is not None else 0
+    ywell = normalized_meta.get("coord_y") if normalized_meta.get("coord_y") is not None else 0
     cota = round(float(normalized_meta["cota"]), 2) if normalized_meta.get("cota") is not None else np.nan
 
     well_time_dir = output_dir / "time_logs" / well_name
@@ -217,7 +221,11 @@ def export_well_time_logs(
     exported_paths: List[Path] = []
     station_rows: List[Dict[str, object]] = []
 
-    pressure_candidates = ("MTEP_SAP", "MTEP_HYD", "CP_SAP", "CP_HYD", "PCO_HYD", "PTV_XPT")
+    pressure_candidates = tuple(
+        field_profile.pressure_summary_mnemonics
+        if field_profile and field_profile.pressure_summary_mnemonics
+        else ("MTEP_SAP", "MTEP_HYD", "CP_SAP", "CP_HYD", "PCO_HYD", "PTV_XPT")
+    )
 
     for s in time_summaries:
         raw_df = well_dfs[s.file_name].copy()
@@ -240,7 +248,7 @@ def export_well_time_logs(
         })
 
         for col in raw_df.columns[1:]:
-            clean_col = col.split(":")[0].strip().upper()
+            clean_col = col.split(":")[0].strip().rstrip(".").upper()
             if clean_col in out_df.columns:
                 clean_col = col.strip().upper()
             out_df[clean_col] = raw_df[col].to_numpy(dtype=float)
@@ -387,23 +395,32 @@ def export_well_to_output(
     output_dir: Path,
     repeat_strategy: Literal["keep_all", "merge"] = "keep_all",
     update_excel: bool = True,
+    field_profile: Optional[FieldProfile] = None,
+    save_metadata_cache: bool = True,
 ) -> WellExportSummary:
     """
     Ejecuta el flujo completo de exportación para un pozo hacia `output/`:
-    1. Normaliza metadatos (X ~2.481.xxx, Y ~4.834.xxx, UWI 14 caracteres, Cota).
+    1. Normaliza metadatos según `FieldProfile` y proyecta coordenadas Lat/Lon si aplica (`pyproj`).
     2. Construye el CSV de curvas en profundidad en `output/wells/<Well>_selected.csv` con `NaN`.
-    3. Exporta los archivos en tiempo (`TIME.S` / XPT) en `output/time_logs/`.
-    4. Actualiza `output/well_metadata.xlsx`.
+    3. Exporta los archivos en tiempo (`TIME.S` / XPT / MDT) en `output/time_logs/`.
+    4. Guarda caché de metadatos JSON en `output/metadata_cache/` (Spec 003 - RF-7).
+    5. Actualiza `output/well_metadata.xlsx`.
     """
     raw_meta = well.llm_metadata or {}
-    norm_meta = normalize_well_metadata(raw_meta, fallback_well_name=well.well_folder_name)
+    norm_meta = normalize_well_metadata(
+        raw_meta,
+        profile=field_profile,
+        fallback_well_name=well.well_folder_name,
+    )
     well.llm_metadata = norm_meta
 
     well_name = str(norm_meta["nombre_pozo"])
     uwi = str(norm_meta.get("uwi") or "")
-    coord_x = int(round(float(norm_meta["coord_x"]))) if norm_meta.get("coord_x") is not None else 0
-    coord_y = int(round(float(norm_meta["coord_y"]))) if norm_meta.get("coord_y") is not None else 0
+    coord_x = norm_meta.get("coord_x") if norm_meta.get("coord_x") is not None else 0
+    coord_y = norm_meta.get("coord_y") if norm_meta.get("coord_y") is not None else 0
     elevation = round(float(norm_meta["cota"]), 2) if norm_meta.get("cota") is not None else np.nan
+    crs_used = str(norm_meta.get("crs_used") or "")
+    coord_note = str(norm_meta.get("coord_resolution_note") or "")
 
     unified_df, grid_start, grid_stop, grid_step, exported_curves = build_unified_well_depth_df(
         well=well,
@@ -427,9 +444,25 @@ def export_well_to_output(
         well_dfs=well_dfs,
         normalized_meta=norm_meta,
         output_dir=output_dir,
+        field_profile=field_profile,
     )
     if station_rows:
         update_time_stations_summary(station_rows, output_dir)
+
+    if save_metadata_cache:
+        cache_dir = output_dir / "metadata_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{well.well_folder_name}_metadata.json"
+        cache_payload = {
+            "well_folder_name": well.well_folder_name,
+            "well_name": well_name,
+            "metadata": norm_meta,
+            "grid_start": grid_start,
+            "grid_stop": grid_stop,
+            "grid_step": grid_step,
+            "depth_csv": str(depth_csv_path.name),
+        }
+        cache_file.write_text(json.dumps(cache_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     summary = WellExportSummary(
         well_name=well_name,
@@ -444,6 +477,8 @@ def export_well_to_output(
         exported_depth_curves=active_curves,
         depth_csv_path=depth_csv_path,
         time_csv_paths=time_csv_paths,
+        crs_used=crs_used,
+        coord_resolution_note=coord_note,
     )
 
     if update_excel:

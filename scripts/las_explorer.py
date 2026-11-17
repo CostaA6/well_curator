@@ -54,6 +54,8 @@ class LasFileSummary:
     raw_header_text: str
     curves: List[CurveOccurrence] = field(default_factory=list)
     stationary_depth_m: Optional[float] = None  # Para registros en TIEMPO (ej. XPT)
+    original_index_unit: str = ""
+    depth_unit_scale: float = 1.0
 
 
 @dataclass
@@ -157,25 +159,28 @@ def _compact_raw_header_for_llm(raw_header_text: str) -> str:
     """
     Mantiene el texto original del encabezado tal cual fue escrito en el archivo .LAS
     (sin usar lasio), omitiendo únicamente líneas decorativas de guiones (#-----)
-    o líneas de encabezado cuyo valor entre el primer punto '.' y los dos puntos ':' está vacío,
-    para ahorrar tokens sin alterar ni un solo carácter de las líneas con información.
+    y líneas de ~Parameter cuyo campo de valor está completamente vacío (ej. R14 . :Remark Line 14),
+    para ahorrar tokens en pozos con muchos .las sin perder información real.
     """
     cleaned: List[str] = []
+    current_section = ""
+    empty_param_re = re.compile(r"^[A-Za-z0-9_]+\s*\.[^\s:]*\s*:")
+
     for line in raw_header_text.splitlines():
         s = line.strip()
         if not s:
             continue
-        # Ignorar separadores decorativos #----
-        if s.startswith("#") and set(s[1:].strip()) <= {"-", "=", " "}:
+        if s.startswith("~"):
+            current_section = s[1:].lstrip().upper()[:1]
+            cleaned.append(line.rstrip())
             continue
-        # Si es una línea con formato MNEM.UNIT  VALOR : DESCR y el VALOR está vacío, omitirla
-        if not s.startswith(("#", "~")) and ":" in s and "." in s:
-            left_of_colon = s.split(":", 1)[0]
-            if "." in left_of_colon:
-                after_dot = left_of_colon.split(".", 1)[1].strip()
-                # En ~Curve el valor antes de ':' puede estar vacío pero el mnemónico es la curva
-                # Solo omitimos líneas vacías fuera de ~Curve (ej. R14 . :Remark Line 14 o STAT . :STATE)
-                pass
+        # Ignorar separadores decorativos #----
+        if s.startswith("#") and set(s[1:].strip()) <= {"-", "=", " ", "*"}:
+            continue
+        # En ~Parameter / ~Other, omitir líneas sin valor antes de ':' (ej. "R14 . :Remark Line 14")
+        if current_section in ("P", "O") and not s.startswith("#") and ":" in s and "." in s:
+            if empty_param_re.match(s):
+                continue
         cleaned.append(line.rstrip())
     return "\n".join(cleaned)
 
@@ -193,14 +198,21 @@ def _safe_float(val: object, default: float = np.nan) -> float:
             return default
 
 
+FEET_TO_METERS = 0.3048
+FEET_UNITS = {"F", "FT", "FEET", "FOOT"}
+
+
 def parse_single_las(
     file_path: Path,
     depth_curve_counts: Dict[str, int],
     time_curve_counts: Dict[str, int],
+    target_depth_unit: str = "M",
 ) -> Tuple[LasFileSummary, pd.DataFrame]:
     """
     1. Corta el encabezado crudo en Python puro con triple barrera (RF-3).
     2. Usa `lasio` exclusivamente para leer las curvas y la tabla numérica ~A (RF-4, RF-5).
+    3. Si un archivo DEPTH viene indexado en pies (FT/FEET/F) y target_depth_unit=='M',
+       convierte índice y rangos a metros (* 0.3048) (Spec 003 - RF-5).
     """
     full_text, encoding_used = read_text_with_fallback(file_path)
     raw_header_text, stop_reason = extract_raw_header_before_ascii(full_text)
@@ -220,7 +232,8 @@ def parse_single_las(
         if first_curve and getattr(first_curve, "original_mnemonic", None)
         else (first_curve.mnemonic.strip().upper() if first_curve else "UNKNOWN")
     )
-    index_unit = first_curve.unit.strip().upper() if first_curve else strt_unit
+    original_index_unit = (first_curve.unit.strip().upper() if first_curve else strt_unit) or strt_unit
+    index_unit = original_index_unit
 
     # Clasificación RF-4: TIME vs DEPTH a partir de la curva índice
     is_time_log = (
@@ -238,6 +251,20 @@ def parse_single_las(
             df.loc[np.isclose(df[col], null_val, atol=1e-2, equal_nan=False), col] = np.nan
 
     index_col = df.columns[0]
+
+    # Conversión automática FT -> M si el archivo de profundidad viene en pies (Spec 003 - RF-5)
+    depth_unit_scale = 1.0
+    if index_type == "DEPTH" and target_depth_unit.upper() == "M" and original_index_unit in FEET_UNITS:
+        depth_unit_scale = FEET_TO_METERS
+        df[index_col] = pd.to_numeric(df[index_col], errors="coerce") * depth_unit_scale
+        if not np.isnan(declared_start):
+            declared_start = round(declared_start * depth_unit_scale, 4)
+        if not np.isnan(declared_stop):
+            declared_stop = round(declared_stop * depth_unit_scale, 4)
+        if step > 0:
+            step = round(step * depth_unit_scale, 4)
+        index_unit = "M"
+
     index_series = df[index_col]
 
     # Si es un registro en TIEMPO (ej. XPT), rescatar la profundidad estacionaria de sonda en metros
@@ -316,6 +343,8 @@ def parse_single_las(
         raw_header_text=raw_header_text,
         curves=curve_occurrences,
         stationary_depth_m=stationary_depth_m,
+        original_index_unit=original_index_unit,
+        depth_unit_scale=depth_unit_scale,
     )
     return summary, df
 
@@ -364,7 +393,10 @@ def build_consolidated_header_block(
     return "\n".join(lines)
 
 
-def explore_well_directory(well_dir: Path) -> Tuple[WellExplorationResult, Dict[str, pd.DataFrame]]:
+def explore_well_directory(
+    well_dir: Path,
+    target_depth_unit: str = "M",
+) -> Tuple[WellExplorationResult, Dict[str, pd.DataFrame]]:
     """
     Escanea una carpeta de pozo, extrae los encabezados puros y lee las curvas numéricas con lasio.
     """
@@ -384,7 +416,12 @@ def explore_well_directory(well_dir: Path) -> Tuple[WellExplorationResult, Dict[
     dataframes: Dict[str, pd.DataFrame] = {}
 
     for lf in las_files:
-        summary, df = parse_single_las(lf, depth_curve_counts, time_curve_counts)
+        summary, df = parse_single_las(
+            lf,
+            depth_curve_counts,
+            time_curve_counts,
+            target_depth_unit=target_depth_unit,
+        )
         summaries.append(summary)
         dataframes[lf.name] = df
 
@@ -434,14 +471,17 @@ def explore_well_directory(well_dir: Path) -> Tuple[WellExplorationResult, Dict[
     return result, dataframes
 
 
-def explore_all_wells(input_root: Path) -> Tuple[List[WellExplorationResult], Dict[str, Dict[str, pd.DataFrame]]]:
+def explore_all_wells(
+    input_root: Path,
+    target_depth_unit: str = "M",
+) -> Tuple[List[WellExplorationResult], Dict[str, Dict[str, pd.DataFrame]]]:
     """Escanea todas las carpetas de pozos dentro de Input/."""
     results: List[WellExplorationResult] = []
     all_dfs: Dict[str, Dict[str, pd.DataFrame]] = {}
 
     for sub in sorted(input_root.iterdir()):
         if sub.is_dir():
-            res, dfs = explore_well_directory(sub)
+            res, dfs = explore_well_directory(sub, target_depth_unit=target_depth_unit)
             results.append(res)
             all_dfs[sub.name] = dfs
 

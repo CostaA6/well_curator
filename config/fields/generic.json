@@ -1,0 +1,28 @@
+{
+  "profile_name": "generic",
+  "description": "Perfil geodésico universal: prioriza Gauss-Krüger si existe y proyecta automáticamente Lat/Lon a POSGAR 2007 (Fajas 1-7) o UTM WGS84 mediante pyproj.",
+  "target_depth_unit": "M",
+  "prioritize_gauss_kruger": true,
+  "forced_epsg": null,
+  "forced_gk_faja": null,
+  "coord_x_range": null,
+  "coord_y_range": null,
+  "coord_decimals": 0,
+  "uwi_pad_rules": [],
+  "well_name_regex_replacements": [
+    ["\\s+", " "]
+  ],
+  "prompt_domain_hints": "",
+  "pressure_summary_mnemonics": [
+    "MTEP_SAP",
+    "MTEP_HYD",
+    "CP_SAP",
+    "CP_HYD",
+    "PCO_HYD",
+    "PTV_XPT",
+    "PRES",
+    "BHP",
+    "PS",
+    "PQZ"
+  ]
+}

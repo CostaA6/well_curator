@@ -1,0 +1,15 @@
+{
+  "started_at": "2026-11-17T16:09:17.584579+00:00",
+  "finished_at": "2026-11-17T16:09:17.658387+00:00",
+  "duration_s": 0.07,
+  "field_profile": "golfo_san_jorge_faja2",
+  "llm_provider": "llama_cpp_local",
+  "llm_model": "gemma-4-E4B-it-Q4_K_M.gguf",
+  "total_well_folders": 6,
+  "processed_count": 0,
+  "skipped_existing_count": 6,
+  "cache_hits": 0,
+  "failed_count": 0,
+  "processed_wells": [],
+  "failed_wells": []
+}

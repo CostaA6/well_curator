@@ -471,3 +471,89 @@ def plot_xpt_stations_summary(summary_csv_path: Path, output_dir: Path) -> Path:
     plt.close(fig)
     return out_path
 
+
+def plot_ft_to_m_alignment(
+    ft_depths_m: np.ndarray,
+    ft_values: np.ndarray,
+    m_depths: np.ndarray,
+    m_values: np.ndarray,
+    unified_csv_path: Path,
+    curve_name: str,
+    output_dir: Path,
+) -> Path:
+    """
+    Spec 003 (RNF-3): Verifica visualmente que un archivo .LAS originalmente en pies (FT)
+    convertido a metros (0.3048) se alinea perfectamente con otro archivo en metros (M)
+    sobre la grilla común exportada en CSV.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    uni_df = pd.read_csv(unified_csv_path)
+
+    fig, ax = plt.subplots(figsize=(6.5, 7.5), dpi=130)
+    ax.plot(ft_values, ft_depths_m, "o", markersize=4, color="#1f77b4", alpha=0.65, label="Entrada en FT (convertida x0.3048)")
+    ax.plot(m_values, m_depths, "s", markersize=4, color="#2ca02c", alpha=0.65, label="Entrada nativa en M")
+
+    col_to_plot = curve_name if curve_name in uni_df.columns else f"{curve_name}:2"
+    valid = uni_df[col_to_plot].notna()
+    ax.plot(uni_df.loc[valid, col_to_plot], uni_df.loc[valid, "DEPTH"], "-", linewidth=1.6, color="#d62728", label=f"CSV Grilla Común ({col_to_plot})")
+
+    ax.invert_yaxis()
+    ax.set_xlabel(f"{curve_name}", fontsize=10, fontweight="bold")
+    ax.set_ylabel("Profundidad Unificada [m]", fontsize=10, fontweight="bold")
+    ax.set_title("Alineación Automática FT -> M sobre Grilla Común", fontsize=11, fontweight="bold")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.legend(loc="best", fontsize=8.5)
+    fig.tight_layout()
+
+    out_path = output_dir / "ft_to_m_alignment_check.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path
+
+
+def plot_geodesic_wells_map(
+    wells_records: List[Dict[str, object]],
+    output_dir: Path,
+) -> Path:
+    """
+    Spec 003 (RNF-3): Mapa en planta (X Este vs Y Norte) mostrando los pozos procesados
+    y el sistema de coordenadas / proyección aplicada (GK directa vs proyectada desde Lat/Lon).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 6.5), dpi=130)
+
+    for rec in wells_records:
+        x = float(rec["coord_x"])
+        y = float(rec["coord_y"])
+        name = str(rec["well_name"])
+        crs = str(rec.get("crs_used") or "")
+        is_proj = "Proyectado" in str(rec.get("coord_note") or "")
+        color = "#e41a1c" if is_proj else "#1f77b4"
+        marker = "^" if is_proj else "o"
+        ax.scatter(x, y, s=90, color=color, marker=marker, edgecolor="black", zorder=4)
+        ax.annotate(
+            f"{name}\n[{crs}]",
+            (x, y),
+            textcoords="offset points",
+            xytext=(8, 6),
+            fontsize=8,
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.75, edgecolor="#cccccc"),
+        )
+
+    ax.scatter([], [], s=80, color="#1f77b4", marker="o", edgecolor="black", label="Gauss-Krüger directa (priorizada)")
+    ax.scatter([], [], s=80, color="#e41a1c", marker="^", edgecolor="black", label="Proyectada desde Lat/Lon (pyproj)")
+    ax.set_xlabel("X Este [m] (Gauss-Krüger)", fontsize=10, fontweight="bold")
+    ax.set_ylabel("Y Norte [m] (Gauss-Krüger)", fontsize=10, fontweight="bold")
+    ax.set_title("Ubicación Geodésica Unificada de Pozos (Spec 003)", fontsize=11, fontweight="bold")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.legend(loc="best", fontsize=8.5)
+    ax.ticklabel_format(style="plain", useOffset=False)
+    fig.tight_layout()
+
+    out_path = output_dir / "geodesic_wells_map.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path
+
+

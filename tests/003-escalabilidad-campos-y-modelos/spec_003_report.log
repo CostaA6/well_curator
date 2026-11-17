@@ -1,0 +1,14 @@
+================================================================================
+REPORTE SPEC 003 — MULTI-CAMPO, AGNÓSTICO A LLM Y BATCH ESCALABLE
+================================================================================
+Corrida en vivo (6 pozos Input/): 245.76 s | Perfil: golfo_san_jorge_faja2 | LLM: gemma-4-E4B-it-Q4_K_M.gguf
+Corrida incremental (skip_existing): 0.07 s | Salteados: 6
+Prueba tolerancia a fallos + caché: Procesados=1, Fallidos=1
+
+Detalle Geodésico de Pozos:
+  - YPF.SC.CVa-19 (UWI=AR010000694600): X=2481797, Y=4834255 [EPSG:5344] | GK directas según perfil (golfo_san_jorge_faja2)
+  - YPF.SC.CVa-24 (UWI=AR010000701100): X=2482091, Y=4833870 [EPSG:5344] | GK directas según perfil (golfo_san_jorge_faja2)
+  - YPF.SC.CVa-25 (UWI=AR010000701200): X=2482049, Y=4834285 [EPSG:5344] | GK directas según perfil (golfo_san_jorge_faja2)
+  - YPF.SC.CVa-37 (UWI=AR010000850000): X=2481254, Y=4834481 [EPSG:5344] | GK directas según perfil (golfo_san_jorge_faja2)
+  - YPF.SC.CVa-38 (UWI=AR010000832700): X=2481588, Y=4834450 [EPSG:5344] | GK directas según perfil (golfo_san_jorge_faja2)
+  - YPF.SC.CVa-39 (UWI=AR010000837200): X=2481883, Y=4834487 [EPSG:5344] | GK directas según perfil (golfo_san_jorge_faja2)
