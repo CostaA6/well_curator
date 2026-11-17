@@ -20,6 +20,9 @@ import webbrowser
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
+# Forzar Matplotlib QtAgg a usar PySide6 (evita conflicto si PyQt6 también está instalado)
+os.environ["QT_API"] = "pyside6"
+
 import matplotlib
 matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
@@ -27,7 +30,7 @@ from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QCoreApplication, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -1540,6 +1543,7 @@ class WellCuratorMainWindow(QMainWindow):
 
 
 def main() -> None:
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLESHEET)
