@@ -27,6 +27,7 @@ import matplotlib
 matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 import numpy as np
 import pandas as pd
 
@@ -36,6 +37,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -83,9 +86,15 @@ from scripts.ui_controller import (
     WORKSPACE_IMPORTS_DIR,
     build_folium_well_map_html,
     discover_well_sources,
+    get_crs_details,
     inverse_project_to_wgs84,
+    list_popular_oilfield_crs,
     load_output_inventory,
+    load_project_file,
+    load_world_continents_geometry,
     prepare_well_log_tracks,
+    save_project_file,
+    search_projected_crs,
     stage_well_drop_items,
     suggest_well_name_from_paths,
 )
@@ -110,6 +119,10 @@ QWidget {
 QFrame#TopBanner {
     background-color: #1E293B;
     border-bottom: 3px solid #2563EB;
+}
+QFrame#ProjectBar {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #CBD5E1;
 }
 QLabel#BannerTitle {
     color: #FFFFFF;
@@ -270,6 +283,248 @@ class MplCanvasWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
+
+
+class CRSSelectorDialog(QDialog):
+    """
+    Selector visual de Sistema de Referencia de Coordenadas (CRS) estilo QGIS (Spec 004 - RF-8):
+    - Consulta la base geodésica completa de pyproj (5.291 EPSG proyectados).
+    - Muestra un Mapa Mundi interactivo con grillas UTM (6°) y Fajas Gauss-Krüger Argentina (1-7).
+    - Al hacer clic en cualquier punto del mapa, filtra los EPSG válidos en esa ubicación y dibuja
+      en rojo el rectángulo `area_of_use.bounds` del CRS seleccionado.
+    """
+
+    def __init__(self, initial_epsg: str = "", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Selector de Proyección / Faja CRS (Estilo QGIS — Base pyproj EPSG)")
+        self.resize(1120, 680)
+        self.selected_epsg: str = initial_epsg
+        self.click_lon: Optional[float] = None
+        self.click_lat: Optional[float] = None
+        self.current_results: List[Dict[str, object]] = []
+        self._geom = load_world_continents_geometry()
+
+        self._build_dialog_ui()
+        self._redraw_map()
+        self._run_search()
+        if initial_epsg:
+            self._select_epsg_in_table(initial_epsg)
+
+    def _build_dialog_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # Barra superior de filtros y presets de vista
+        top_bar = QHBoxLayout()
+        top_bar.addWidget(QLabel("Buscar EPSG / Nombre / País:"))
+        self.txt_search = QLineEdit()
+        self.txt_search.setPlaceholderText("Ej: POSGAR, 5344, Argentina 2, UTM zone 19S, SIRGAS, Texas...")
+        self.txt_search.textChanged.connect(self._run_search)
+        top_bar.addWidget(self.txt_search, 2)
+
+        self.cmb_cat = QComboBox()
+        self.cmb_cat.addItem("Todos los CRS (5.291)", "all")
+        self.cmb_cat.addItem("Argentina (POSGAR / Campo Inchauspe)", "argentina")
+        self.cmb_cat.addItem("UTM WGS 84 Global", "utm")
+        self.cmb_cat.currentIndexChanged.connect(self._run_search)
+        top_bar.addWidget(self.cmb_cat)
+
+        btn_clear_click = QPushButton("Limpiar Clic en Mapa")
+        btn_clear_click.clicked.connect(self._clear_map_click)
+        top_bar.addWidget(btn_clear_click)
+        layout.addLayout(top_bar)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Panel Izquierdo: Mapa Mundi Clickable estilo QGIS
+        left_panel = QWidget()
+        left_l = QVBoxLayout(left_panel)
+        left_l.setContentsMargins(0, 0, 0, 0)
+
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(QLabel("Vista de Mapa:"))
+        btn_z_world = QPushButton("Mundo Completo")
+        btn_z_world.clicked.connect(lambda: self._set_map_bounds((-180, 180), (-75, 82)))
+        btn_z_sa = QPushButton("Sudamérica / Argentina Fajas 1-7")
+        btn_z_sa.clicked.connect(lambda: self._set_map_bounds((-82, -45), (-58, -15)))
+        btn_z_na = QPushButton("Norteamérica")
+        btn_z_na.clicked.connect(lambda: self._set_map_bounds((-140, -55), (15, 65)))
+        zoom_row.addWidget(btn_z_world)
+        zoom_row.addWidget(btn_z_sa)
+        zoom_row.addWidget(btn_z_na)
+        zoom_row.addStretch()
+        left_l.addLayout(zoom_row)
+
+        self.map_canvas = MplCanvasWidget(figsize=(6.8, 5.2))
+        self.map_canvas.canvas.mpl_connect("button_press_event", self._on_map_clicked)
+        left_l.addWidget(self.map_canvas, 1)
+
+        self.lbl_click_info = QLabel("Hacé clic en el mapa mundi para detectar automáticamente Fajas GK o Zonas UTM en esa ubicación.")
+        self.lbl_click_info.setStyleSheet("color: #1D4ED8; font-weight: 600;")
+        left_l.addWidget(self.lbl_click_info)
+
+        # Panel Derecho: Tabla de CRS encontrados + Info Area de Uso
+        right_panel = QWidget()
+        right_l = QVBoxLayout(right_panel)
+        right_l.setContentsMargins(0, 0, 0, 0)
+
+        self.tbl_crs = QTableWidget(0, 3)
+        self.tbl_crs.setHorizontalHeaderLabels(["Código EPSG", "Nombre del Sistema Proyectado", "Área de Uso"])
+        self.tbl_crs.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_crs.horizontalHeader().setStretchLastSection(True)
+        self.tbl_crs.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl_crs.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_crs.itemSelectionChanged.connect(self._on_crs_row_selected)
+        self.tbl_crs.itemDoubleClicked.connect(lambda _: self.accept())
+        right_l.addWidget(self.tbl_crs, 1)
+
+        self.lbl_crs_detail = QLabel("Seleccioná un CRS de la lista o hacé clic sobre el mapa.")
+        self.lbl_crs_detail.setWordWrap(True)
+        self.lbl_crs_detail.setStyleSheet("background: #F8FAFC; border: 1px solid #CBD5E1; padding: 8px; border-radius: 4px;")
+        right_l.addWidget(self.lbl_crs_detail)
+
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([600, 500])
+        layout.addWidget(splitter, 1)
+
+        # Botonera inferior
+        btn_box = QHBoxLayout()
+        btn_auto = QPushButton("Usar Modo Automático (Priorizar GK / Auto Lat-Lon)")
+        btn_auto.clicked.connect(self._accept_automatic)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        self.btn_apply = QPushButton("Aplicar Proyección Seleccionada")
+        self.btn_apply.setObjectName("PrimaryBtn")
+        self.btn_apply.clicked.connect(self.accept)
+
+        btn_box.addWidget(btn_auto)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_cancel)
+        btn_box.addWidget(self.btn_apply)
+        layout.addLayout(btn_box)
+
+        self._xlim = (-180.0, 180.0)
+        self._ylim = (-75.0, 82.0)
+
+    def _set_map_bounds(self, xlim: Tuple[float, float], ylim: Tuple[float, float]) -> None:
+        self._xlim = xlim
+        self._ylim = ylim
+        self._redraw_map()
+
+    def _clear_map_click(self) -> None:
+        self.click_lon = None
+        self.click_lat = None
+        self.lbl_click_info.setText("Filtro por clic limpiado. Mostrando catálogo EPSG completo.")
+        self._run_search()
+        self._redraw_map()
+
+    def _on_map_clicked(self, event) -> None:
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            return
+        self.click_lon = round(float(event.xdata), 3)
+        self.click_lat = round(float(event.ydata), 3)
+        self.lbl_click_info.setText(
+            f"Punto elegido: Lat {self.click_lat:.3f}°, Lon {self.click_lon:.3f}° — Mostrando CRS EPSG válidos en esta zona."
+        )
+        self._run_search()
+        self._redraw_map()
+
+    def _run_search(self) -> None:
+        self.current_results = search_projected_crs(
+            query=self.txt_search.text(),
+            click_lon=self.click_lon,
+            click_lat=self.click_lat,
+            category=str(self.cmb_cat.currentData() or "all"),
+            limit=250,
+        )
+        self.tbl_crs.setRowCount(len(self.current_results))
+        for r, item in enumerate(self.current_results):
+            self.tbl_crs.setItem(r, 0, QTableWidgetItem(str(item["epsg"])))
+            self.tbl_crs.setItem(r, 1, QTableWidgetItem(str(item["name"])))
+            self.tbl_crs.setItem(r, 2, QTableWidgetItem(str(item["area_name"])))
+        if self.current_results and self.click_lon is not None:
+            self.tbl_crs.selectRow(0)
+
+    def _select_epsg_in_table(self, epsg_code: str) -> None:
+        norm = epsg_code.strip().upper()
+        for r, item in enumerate(self.current_results):
+            if item["epsg"] == norm:
+                self.tbl_crs.selectRow(r)
+                return
+
+    def _on_crs_row_selected(self) -> None:
+        rows = self.tbl_crs.selectionModel().selectedRows()
+        if not rows:
+            return
+        idx = rows[0].row()
+        if 0 <= idx < len(self.current_results):
+            item = self.current_results[idx]
+            self.selected_epsg = str(item["epsg"])
+            bounds = item.get("bounds")
+            b_str = f"Lon [{bounds[0]:.2f}, {bounds[2]:.2f}] | Lat [{bounds[1]:.2f}, {bounds[3]:.2f}]" if bounds else "S/D"
+            self.lbl_crs_detail.setText(
+                f"<b>{item['epsg']}</b> — {item['name']}<br>"
+                f"<b>Área:</b> {item['area_name']}<br>"
+                f"<b>Extensión:</b> {b_str}"
+            )
+            self._redraw_map()
+
+    def _redraw_map(self) -> None:
+        fig = self.map_canvas.figure
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_facecolor("#EFF6FF")
+
+        # Dibujar grillas UTM cada 6°
+        for lon_u in range(-180, 181, 6):
+            ax.axvline(lon_u, color="#CBD5E1", linewidth=0.45, zorder=1)
+        for lat_u in range(-60, 85, 16):
+            ax.axhline(lat_u, color="#CBD5E1", linewidth=0.45, zorder=1)
+
+        # Continentes offline
+        for cont in self._geom.get("continents", []):
+            pts = np.array(cont["coords"], dtype=float)
+            ax.fill(pts[:, 0], pts[:, 1], facecolor="#E2E8F0", edgecolor="#64748B", linewidth=0.7, zorder=2)
+
+        # Contorno destacado de Argentina y Fajas GK 1..7 (-73.5 a -52.5 cada 3°)
+        arg_pts = self._geom.get("argentina_outline", [])
+        if arg_pts:
+            ap = np.array(arg_pts, dtype=float)
+            ax.fill(ap[:, 0], ap[:, 1], facecolor="#DBEAFE", edgecolor="#1D4ED8", linewidth=1.0, zorder=3)
+
+        faja_colors = ["#BFDBFE", "#93C5FD", "#BFDBFE", "#93C5FD", "#BFDBFE", "#93C5FD", "#BFDBFE"]
+        for faja_idx in range(1, 8):
+            w_lon = -73.5 + (faja_idx - 1) * 3.0
+            rect_f = Rectangle((w_lon, -56.0), 3.0, 35.0, facecolor=faja_colors[faja_idx - 1], alpha=0.22,
+                               edgecolor="#2563EB", linestyle="--", linewidth=0.6, zorder=2.5)
+            ax.add_patch(rect_f)
+            if self._xlim[1] - self._xlim[0] <= 60:
+                ax.text(w_lon + 1.5, -54.5, f"F{faja_idx}", ha="center", va="bottom",
+                        fontsize=7.5, fontweight="bold", color="#1E40AF", zorder=4)
+
+        # Dibujar Area of Use del CRS seleccionado (estilo QGIS)
+        sel_info = get_crs_details(self.selected_epsg) if self.selected_epsg else None
+        if sel_info and sel_info.get("bounds"):
+            w, s, e, n = sel_info["bounds"]
+            box = Rectangle((w, s), max(0.5, e - w), max(0.5, n - s), facecolor="#EF4444", alpha=0.20,
+                            edgecolor="#DC2626", linewidth=2.0, zorder=5, label=f"Área {sel_info['epsg']}")
+            ax.add_patch(box)
+
+        if self.click_lon is not None and self.click_lat is not None:
+            ax.plot(self.click_lon, self.click_lat, marker="+", markersize=14, markeredgewidth=2.2, color="#DC2626", zorder=6)
+            ax.plot(self.click_lon, self.click_lat, marker="o", markersize=6, color="#DC2626", zorder=6)
+
+        ax.set_xlim(self._xlim)
+        ax.set_ylim(self._ylim)
+        ax.set_xlabel("Longitud [°]")
+        ax.set_ylabel("Latitud [°]")
+        ax.set_title("Clic en el Mapa para Filtrar Faja GK / Zona UTM", fontsize=10, fontweight="bold")
+        fig.tight_layout()
+        self.map_canvas.canvas.draw()
+
+    def _accept_automatic(self) -> None:
+        self.selected_epsg = ""
+        self.accept()
 
 
 class LLMExtractionWorker(QThread):
@@ -434,6 +689,8 @@ class WellCuratorMainWindow(QMainWindow):
         self.resize(1380, 860)
 
         self.output_dir = initial_output_dir or (PROJECT_ROOT / "output")
+        self.current_project_path: Optional[Path] = None
+        self.project_manual_wells: List[Dict[str, object]] = []
         self.batch_extra_roots: List[Path] = []
         self.discovered_wells: List[Dict[str, object]] = []
         self.prescanned_wells: Dict[str, Tuple[WellExplorationResult, Dict[str, pd.DataFrame]]] = {}
@@ -447,7 +704,7 @@ class WellCuratorMainWindow(QMainWindow):
         self._populating_review_table = False
 
         self._build_ui()
-        self._load_defaults_and_scan()
+        self._init_empty_project()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -484,6 +741,29 @@ class WellCuratorMainWindow(QMainWindow):
         b_layout.addWidget(self.badge_profile)
         b_layout.addWidget(self.badge_output)
         root_layout.addWidget(banner)
+
+        # Barra de gestión de proyectos (Nuevo / Abrir / Guardar)
+        proj_bar = QFrame()
+        proj_bar.setObjectName("ProjectBar")
+        p_layout = QHBoxLayout(proj_bar)
+        p_layout.setContentsMargins(14, 5, 14, 5)
+
+        self.lbl_project_name = QLabel("Proyecto: Nuevo Proyecto (Vacío)")
+        self.lbl_project_name.setStyleSheet("font-weight: bold; color: #0F172A;")
+        btn_new_proj = QPushButton("Nuevo Proyecto")
+        btn_new_proj.clicked.connect(self._new_project_clicked)
+        btn_open_proj = QPushButton("Abrir Proyecto...")
+        btn_open_proj.clicked.connect(self._open_project_clicked)
+        btn_save_proj = QPushButton("Guardar Proyecto...")
+        btn_save_proj.setObjectName("PrimaryBtn")
+        btn_save_proj.clicked.connect(self._save_project_clicked)
+
+        p_layout.addWidget(self.lbl_project_name)
+        p_layout.addStretch()
+        p_layout.addWidget(btn_new_proj)
+        p_layout.addWidget(btn_open_proj)
+        p_layout.addWidget(btn_save_proj)
+        root_layout.addWidget(proj_bar)
 
         # Contenedor principal de pestañas
         self.tabs = QTabWidget()
@@ -533,16 +813,16 @@ class WellCuratorMainWindow(QMainWindow):
         btn_row.addWidget(btn_add_folder)
         drop_layout.addLayout(btn_row)
 
-        # Derecha: Fuentes Batch (Carpetas)
-        grp_batch = QGroupBox("Directorios de Pozos Activos (Batch)")
+        # Derecha: Fuentes Batch (Carpetas opcionales — desmarcadas por defecto en proyecto nuevo vacío)
+        grp_batch = QGroupBox("Directorios de Pozos Activos (Opcional / Batch)")
         batch_layout = QVBoxLayout(grp_batch)
 
-        self.chk_include_input = QCheckBox(f"Incluir carpeta principal Input/ (Solo lectura)")
-        self.chk_include_input.setChecked(True)
+        self.chk_include_input = QCheckBox("Cargar pozos de ejemplo desde Input/ (Solo lectura)")
+        self.chk_include_input.setChecked(False)
         self.chk_include_input.stateChanged.connect(self._refresh_discovered_wells)
 
-        self.chk_include_imports = QCheckBox("Incluir pozos añadidos en workspace_imports/")
-        self.chk_include_imports.setChecked(True)
+        self.chk_include_imports = QCheckBox("Cargar historial de workspace_imports/")
+        self.chk_include_imports.setChecked(False)
         self.chk_include_imports.stateChanged.connect(self._refresh_discovered_wells)
 
         batch_layout.addWidget(self.chk_include_input)
@@ -641,18 +921,32 @@ class WellCuratorMainWindow(QMainWindow):
         self.cmb_field_profile = QComboBox()
         profiles = list_field_profiles()
         self.cmb_field_profile.addItems(profiles)
-        if "golfo_san_jorge_faja2" in profiles:
-            self.cmb_field_profile.setCurrentText("golfo_san_jorge_faja2")
+        if "generic" in profiles:
+            self.cmb_field_profile.setCurrentText("generic")
         self.cmb_field_profile.currentTextChanged.connect(self._on_config_changed)
 
         self.lbl_profile_desc = QLabel("")
         self.lbl_profile_desc.setWordWrap(True)
         self.lbl_profile_desc.setStyleSheet("color: #475569; font-size: 8.5pt;")
 
+        crs_row = QHBoxLayout()
         self.cmb_force_epsg = QComboBox()
+        self.cmb_force_epsg.setEditable(True)
+        self.cmb_force_epsg.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.cmb_force_epsg.addItem("Automático del perfil (priorizar GK / proyectar Lat-Lon)", "")
-        for faja, epsg in POSGAR2007_FAJA_EPSG.items():
-            self.cmb_force_epsg.addItem(f"Forzar Gauss-Krüger Faja {faja} ({epsg})", epsg)
+        for crs_item in list_popular_oilfield_crs():
+            self.cmb_force_epsg.addItem(f"{crs_item['epsg']} — {crs_item['name']}", crs_item["epsg"])
+        completer = QCompleter(self.cmb_force_epsg.model(), self.cmb_force_epsg)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.cmb_force_epsg.setCompleter(completer)
+        self.cmb_force_epsg.currentIndexChanged.connect(self._on_config_changed)
+
+        btn_crs_map = QPushButton("Mapa Mundi CRS (QGIS)...")
+        btn_crs_map.setObjectName("PrimaryBtn")
+        btn_crs_map.clicked.connect(self._open_crs_map_selector)
+        crs_row.addWidget(self.cmb_force_epsg, 1)
+        crs_row.addWidget(btn_crs_map)
 
         self.cmb_repeat_strategy = QComboBox()
         self.cmb_repeat_strategy.addItem("Conservar todas con sufijo (:2, :3, :4) [keep_all]", "keep_all")
@@ -672,7 +966,7 @@ class WellCuratorMainWindow(QMainWindow):
 
         form_field.addRow("Perfil de Campo:", self.cmb_field_profile)
         form_field.addRow("Descripción:", self.lbl_profile_desc)
-        form_field.addRow("Proyección / Borde de Faja:", self.cmb_force_epsg)
+        form_field.addRow("Proyección / Sistema CRS:", crs_row)
         form_field.addRow("Curvas Repetidas (global):", self.cmb_repeat_strategy)
         form_field.addRow("", self.chk_incremental)
         form_field.addRow("", self.chk_use_cache)
@@ -915,19 +1209,244 @@ class WellCuratorMainWindow(QMainWindow):
         self.tabs.addTab(tab, "5. Salidas (output/)")
 
     # ------------------------------------------------------------------
-    # LÓGICA DE EVENTOS Y ACCIONES
+    # LÓGICA DE PROYECTOS (VACÍO POR DEFECTO, GUARDAR / ABRIR) Y CRS
     # ------------------------------------------------------------------
-    def _load_defaults_and_scan(self) -> None:
+    def _init_empty_project(self) -> None:
+        """Inicializa la sesión como un proyecto nuevo 100% vacío sin pozos precargados (Spec 004 - RF-7)."""
+        self.current_project_path = None
+        self.project_manual_wells = []
+        self.batch_extra_roots = []
+        self.discovered_wells = []
+        self.prescanned_wells = {}
+        self.llm_wells = {}
+        self.manual_edited_wells = set()
+        self.per_curve_overrides = {}
+        self.export_summaries = {}
+
+        self.chk_include_input.blockSignals(True)
+        self.chk_include_imports.blockSignals(True)
+        self.chk_include_input.setChecked(False)
+        self.chk_include_imports.setChecked(False)
+        self.chk_include_input.blockSignals(False)
+        self.chk_include_imports.blockSignals(False)
+
+        self.lbl_project_name.setText("Proyecto: Nuevo Proyecto (Vacío)")
+        self.lbl_batch_roots.setText("Carpetas batch adicionales: ninguna")
+        self.tbl_import.setRowCount(0)
+        self.tbl_review.setRowCount(0)
+        self.tbl_repeated_curves.setRowCount(0)
+        self.tbl_map_names.setRowCount(0)
+        self.txt_llm_report.clear()
+        self.txt_console.clear()
+        self.cmb_log_well.clear()
+        self.lst_log_curves.clear()
+        self.progress_bar.setValue(0)
+        self.lbl_progress.setText("Proyecto nuevo vacío. Arrastrá pozos o abrí un proyecto.")
+
+        self.tbl_out_excel.setRowCount(0)
+        self.tbl_out_excel.setColumnCount(0)
+        self.tbl_out_csv.setRowCount(0)
+        self.tbl_out_csv.setColumnCount(0)
+        self.tbl_out_xpt.setRowCount(0)
+        self.tbl_out_xpt.setColumnCount(0)
+        self.cmb_out_csv.clear()
+        self.txt_out_errors.clear()
+        self.lbl_output_summary.setText("Proyecto nuevo vacío (sin exportaciones aún en esta sesión).")
+
         self._on_config_changed()
+
+    def _new_project_clicked(self) -> None:
+        self._init_empty_project()
+
+    def _save_project_clicked(self) -> None:
+        default_dir = str(PROJECT_ROOT / "projects")
+        Path(default_dir).mkdir(parents=True, exist_ok=True)
+        fpath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar Proyecto Well Curator",
+            str(self.current_project_path or (Path(default_dir) / "mi_proyecto.wellcurator.json")),
+            "Proyectos Well Curator (*.wellcurator.json *.json)",
+        )
+        if fpath:
+            saved = self.save_project_to_path(Path(fpath))
+            QMessageBox.information(self, "Proyecto Guardado", f"Proyecto guardado en:\n{saved}")
+
+    def save_project_to_path(self, project_path: Path) -> Path:
+        wells_state: List[Dict[str, object]] = []
+        included_map: Dict[str, bool] = {}
+        for r_idx, entry in enumerate(self.discovered_wells):
+            chk = self.tbl_import.item(r_idx, 0)
+            included_map[str(entry["well_folder_name"])] = bool(chk and chk.checkState() == Qt.CheckState.Checked)
+
+        for entry in self.discovered_wells:
+            fname = str(entry["well_folder_name"])
+            llm_meta = None
+            if fname in self.llm_wells:
+                llm_meta = self.llm_wells[fname][0].llm_metadata
+            wells_state.append({
+                "well_folder_name": fname,
+                "folder_path": str(entry["folder_path"]),
+                "source": str(entry.get("source", "")),
+                "las_count": int(entry.get("las_count", 0)),
+                "included": included_map.get(fname, True),
+                "llm_metadata": llm_meta,
+                "manual_edited": fname in self.manual_edited_wells,
+                "per_curve_overrides": self.per_curve_overrides.get(fname, {}),
+            })
+
+        cfg = self._build_llm_config()
+        state = {
+            "project_name": project_path.stem.replace(".wellcurator", ""),
+            "output_dir": str(self.output_dir),
+            "field_profile": self.cmb_field_profile.currentText() or "generic",
+            "forced_epsg": self._selected_forced_epsg(),
+            "repeat_strategy": self.cmb_repeat_strategy.currentData() or "keep_all",
+            "incremental": self.chk_incremental.isChecked(),
+            "use_cache": self.chk_use_cache.isChecked(),
+            "include_input": self.chk_include_input.isChecked(),
+            "include_imports": self.chk_include_imports.isChecked(),
+            "batch_extra_roots": [str(p) for p in self.batch_extra_roots],
+            "llm_config": {
+                "provider": cfg.provider,
+                "model_name": cfg.model_name,
+                "base_url": cfg.base_url,
+                "gpu_device": cfg.gpu_device,
+                "ctx_size": cfg.ctx_size,
+                "model_path": str(cfg.model_path),
+            },
+            "wells": wells_state,
+        }
+        saved = save_project_file(project_path, state)
+        self.current_project_path = saved
+        self.lbl_project_name.setText(f"Proyecto: {saved.name}")
+        return saved
+
+    def _open_project_clicked(self) -> None:
+        default_dir = str(PROJECT_ROOT / "projects")
+        fpath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Abrir Proyecto Well Curator",
+            default_dir if Path(default_dir).exists() else str(PROJECT_ROOT),
+            "Proyectos Well Curator (*.wellcurator.json *.json)",
+        )
+        if fpath:
+            try:
+                self.load_project_from_path(Path(fpath))
+            except Exception as exc:
+                QMessageBox.warning(self, "Error al abrir proyecto", str(exc))
+
+    def load_project_from_path(self, project_path: Path) -> None:
+        data = load_project_file(project_path)
+        self._init_empty_project()
+        self.current_project_path = project_path
+
+        out_str = str(data.get("output_dir") or "")
+        if out_str:
+            self.output_dir = Path(out_str)
+            self.txt_output_dir.setText(out_str)
+            self.badge_output.setText(f"Salida: {self.output_dir.name}/")
+
+        prof_name = str(data.get("field_profile") or "generic")
+        if self.cmb_field_profile.findText(prof_name) >= 0:
+            self.cmb_field_profile.setCurrentText(prof_name)
+        self._set_forced_epsg(str(data.get("forced_epsg") or ""))
+
+        rep_s = str(data.get("repeat_strategy") or "keep_all")
+        self.cmb_repeat_strategy.setCurrentIndex(0 if rep_s == "keep_all" else 1)
+        self.chk_incremental.setChecked(bool(data.get("incremental", False)))
+        self.chk_use_cache.setChecked(bool(data.get("use_cache", True)))
+
+        llm_d = data.get("llm_config") or {}
+        if llm_d.get("provider"):
+            self.cmb_provider.setCurrentText(str(llm_d["provider"]))
+        if llm_d.get("base_url"):
+            self.txt_base_url.setText(str(llm_d["base_url"]))
+        if llm_d.get("model_name"):
+            self.txt_model_name.setText(str(llm_d["model_name"]))
+        if llm_d.get("gpu_device"):
+            self.cmb_gpu.setCurrentText(str(llm_d["gpu_device"]))
+        if llm_d.get("ctx_size"):
+            self.spn_ctx.setValue(int(llm_d["ctx_size"]))
+
+        self.batch_extra_roots = [Path(p) for p in data.get("batch_extra_roots", []) if Path(p).exists()]
+        if self.batch_extra_roots:
+            self.lbl_batch_roots.setText("Carpetas batch adicionales: " + ", ".join(r.name for r in self.batch_extra_roots))
+
+        for w in data.get("wells", []):
+            wpath = Path(str(w.get("folder_path", "")))
+            if wpath.exists() and wpath.is_dir():
+                las_n = len([f for f in wpath.iterdir() if f.is_file() and f.suffix.lower() == ".las"])
+                fname = str(w.get("well_folder_name") or wpath.name)
+                self.project_manual_wells.append({
+                    "well_folder_name": fname,
+                    "folder_path": wpath,
+                    "source": str(w.get("source") or "Proyecto"),
+                    "las_count": las_n,
+                })
+                self.per_curve_overrides[fname] = dict(w.get("per_curve_overrides") or {})
+                if w.get("manual_edited"):
+                    self.manual_edited_wells.add(fname)
+
         self._refresh_discovered_wells()
+        self._run_prescan()
+
+        # Restaurar metadatos LLM guardados en el proyecto
+        for w in data.get("wells", []):
+            fname = str(w.get("well_folder_name") or "")
+            if fname in self.prescanned_wells and isinstance(w.get("llm_metadata"), dict):
+                res, dfs = self.prescanned_wells[fname]
+                res.llm_metadata = dict(w["llm_metadata"])
+                self.llm_wells[fname] = (res, dfs)
+
+        if self.llm_wells:
+            self._populate_review_table()
+            self.tbl_review.selectRow(0)
+            self._refresh_all_visualizations()
         self._refresh_output_tab()
+
+        self.lbl_project_name.setText(f"Proyecto: {project_path.name}")
+        self.lbl_progress.setText(f"Proyecto '{project_path.name}' cargado ({len(self.discovered_wells)} pozos).")
+        self._on_config_changed()
+
+    def _selected_forced_epsg(self) -> str:
+        idx = self.cmb_force_epsg.currentIndex()
+        if idx >= 0 and self.cmb_force_epsg.itemData(idx):
+            txt = self.cmb_force_epsg.currentText().strip()
+            data_val = str(self.cmb_force_epsg.itemData(idx) or "")
+            if data_val and (data_val in txt or txt.startswith("Automático")):
+                return data_val if not txt.startswith("Automático") else ""
+        import re as _re
+        m = _re.search(r"EPSG:\d+", self.cmb_force_epsg.currentText().upper())
+        return m.group(0) if m else ""
+
+    def _set_forced_epsg(self, epsg_code: str) -> None:
+        norm = epsg_code.strip().upper()
+        if not norm:
+            self.cmb_force_epsg.setCurrentIndex(0)
+            self._on_config_changed()
+            return
+        for i in range(self.cmb_force_epsg.count()):
+            if str(self.cmb_force_epsg.itemData(i) or "").upper() == norm:
+                self.cmb_force_epsg.setCurrentIndex(i)
+                self._on_config_changed()
+                return
+        info = get_crs_details(norm)
+        label = f"{norm} — {info['name']}" if info else norm
+        self.cmb_force_epsg.addItem(label, norm)
+        self.cmb_force_epsg.setCurrentIndex(self.cmb_force_epsg.count() - 1)
+        self._on_config_changed()
+
+    def _open_crs_map_selector(self) -> None:
+        dlg = CRSSelectorDialog(initial_epsg=self._selected_forced_epsg(), parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._set_forced_epsg(dlg.selected_epsg)
 
     def _active_profile(self) -> FieldProfile:
         prof_name = self.cmb_field_profile.currentText() or "generic"
         profile = load_field_profile(prof_name)
-        forced_epsg = self.cmb_force_epsg.currentData()
+        forced_epsg = self._selected_forced_epsg()
         if forced_epsg:
-            profile.forced_epsg = str(forced_epsg)
+            profile.forced_epsg = forced_epsg
             faja_num = [k for k, v in POSGAR2007_FAJA_EPSG.items() if v == forced_epsg]
             if faja_num:
                 profile.forced_gk_faja = faja_num[0]
@@ -954,7 +1473,9 @@ class WellCuratorMainWindow(QMainWindow):
     def _on_config_changed(self) -> None:
         prof = load_field_profile(self.cmb_field_profile.currentText() or "generic")
         self.lbl_profile_desc.setText(prof.description or prof.profile_name)
-        self.badge_profile.setText(f"Campo: {prof.profile_name}")
+        epsg = self._selected_forced_epsg()
+        crs_tag = f" | {epsg}" if epsg else " | CRS Auto"
+        self.badge_profile.setText(f"Campo: {prof.profile_name}{crs_tag}")
         prov = self.cmb_provider.currentText()
         mod = self.cmb_gguf.currentText() if prov == "llama_cpp_local" else self.txt_model_name.text().strip()
         self.badge_llm.setText(f"LLM: {prov} ({mod})")
@@ -972,7 +1493,15 @@ class WellCuratorMainWindow(QMainWindow):
         try:
             dest_dir, imported = stage_well_drop_items(paths, target_name, WORKSPACE_IMPORTS_DIR)
             self.txt_target_well_name.clear()
-            self.chk_include_imports.setChecked(True)
+            # Añadir únicamente el pozo importado al proyecto activo (sin cargar historial ajeno)
+            rp = dest_dir.resolve()
+            if not any(Path(str(w["folder_path"])).resolve() == rp for w in self.project_manual_wells):
+                self.project_manual_wells.append({
+                    "well_folder_name": dest_dir.name,
+                    "folder_path": dest_dir,
+                    "source": "Importado (Drag & Drop)",
+                    "las_count": len(imported),
+                })
             self._refresh_discovered_wells()
             self._run_prescan()
             QMessageBox.information(
@@ -1024,7 +1553,15 @@ class WellCuratorMainWindow(QMainWindow):
         for extra in self.batch_extra_roots:
             roots.append((f"Batch ({extra.name})", extra))
 
-        self.discovered_wells = discover_well_sources(roots)
+        combined: List[Dict[str, object]] = []
+        seen_paths = set()
+        for entry in self.project_manual_wells + discover_well_sources(roots):
+            rp = Path(str(entry["folder_path"])).resolve()
+            if rp not in seen_paths:
+                seen_paths.add(rp)
+                combined.append(entry)
+
+        self.discovered_wells = combined
         self.tbl_import.setRowCount(len(self.discovered_wells))
 
         for r_idx, item in enumerate(self.discovered_wells):

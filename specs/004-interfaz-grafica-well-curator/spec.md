@@ -78,6 +78,25 @@ Replicar y hacer interactivas dentro de la app todas las validaciones visuales d
 
 ---
 
+### RF-7 — Proyecto Nuevo Vacío por Defecto y Guardar / Cargar Proyectos (`.wellcurator.json`)
+- **Inicio limpio**: Al abrir la aplicación, inicia como un **proyecto nuevo vacío** (sin pozos precargados de `Input/` ni de `workspace_imports/`). Los directorios existentes en disco permanecen intactos y solo se incorporan si el usuario los añade explícitamente o abre un proyecto guardado.
+- **Gestión de Proyectos en Barra Superior y Pestaña 1**:
+  - **Nuevo Proyecto**: limpia el estado en memoria de la UI para comenzar desde cero.
+  - **Guardar Proyecto (`*.wellcurator.json`)**: persiste la configuración del proyecto (perfil de campo, EPSG seleccionado, configuración no secreta del LLM, estrategia de curvas repetidas, rutas de pozos importados, metadatos LLM/ediciones manuales, overrides por curva y carpeta `output/`).
+  - **Abrir / Cargar Proyecto (`*.wellcurator.json`)**: reconstruye todo el estado en las 5 pestañas para retomar exactamente donde el usuario había dejado su trabajo.
+
+---
+
+### RF-8 — Selector Completo de Proyecciones (`pyproj.database`) + Mapa Mundi Interactivo estilo QGIS
+- **Catálogo EPSG completo**: en lugar de limitarse a `generic` vs `Faja 2`, consultar directamente la base geodésica completa de `pyproj.database.query_crs_info` (~5.291 CRS proyectados EPSG del mundo: POSGAR 2007, POSGAR 94, Campo Inchauspe, WGS 84 / UTM zonas 1–60 Norte/Sur, MAGNA-SIRGAS, SIRGAS 2000, NAD83, etc.).
+- **Desplegable buscable en Pestaña 2**: permite elegir `Automático` o buscar/seleccionar cualquier sistema EPSG por código o nombre.
+- **Visor / Selector en Mapa Mundi estilo QGIS (`CRSSelectorDialog`)**:
+  - Diálogo con mapa mundi interactivo offline (con modos de vista `Mundo Completo`, `Sudamérica / Argentina Fajas 1–7` y `Norteamérica`, grilla de husos UTM y Fajas GK).
+  - Al hacer **clic en cualquier punto `(lon, lat)` del mapa**, filtra instantáneamente mediante `pyproj.aoi.AreaOfInterest` los CRS proyectados válidos en esa ubicación exacta.
+  - Al seleccionar un CRS de la lista, dibuja en rojo su **`area_of_use.bounds`** sobre el mapa mundi (exactamente como QGIS) y muestra EPSG, nombre oficial y región de uso antes de aplicarlo al proyecto.
+
+---
+
 ## 3. Requerimientos No Funcionales (RNF)
 - **RNF-1 (Cero bloqueo de UI)**: la inferencia del LLM y la exportación deben ejecutarse en hilos/procesos separados para que la interfaz responda durante el procesamiento de lotes largos.
 - **RNF-2 (Inmutabilidad de `Input/`)**: los archivos originales jamás se modifican ni mueven; cualquier staging de drag & drop opera en una carpeta temporal o de proyecto dedicada sin tocar `Input/`.

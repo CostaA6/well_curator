@@ -27,9 +27,12 @@ from scripts.llm_extractor import test_llm_connection as probe_llm_connection
 from scripts.ui_controller import (
     build_folium_well_map_html,
     discover_well_sources,
+    get_crs_details,
     inverse_project_to_wgs84,
+    list_popular_oilfield_crs,
     load_output_inventory,
     prepare_well_log_tracks,
+    search_projected_crs,
     stage_well_drop_items,
 )
 from scripts.well_exporter import export_well_to_output
@@ -197,10 +200,102 @@ def test_rf5_inverse_geodesy_folium_map_and_log_tracks() -> None:
     assert tracks[0]["csv_depth"] is not None and len(tracks[0]["csv_depth"]) > 1000
 
 
+def test_rf7_rf8_empty_project_save_load_and_qgis_crs_map(tmp_path: Path) -> None:
+    """
+    RF-7 / RF-8:
+    1) Verifica que la GUI arranque como proyecto nuevo vacío (sin pozos precargados).
+    2) Verifica el catálogo completo EPSG (pyproj.database) por búsqueda y por clic (AreaOfInterest).
+    3) Prueba el diálogo `CRSSelectorDialog` estilo QGIS con zoom a Sudamérica/Argentina y clic en Faja 2.
+    4) Prueba guardar (`*.wellcurator.json`), limpiar a vacío y recargar el proyecto completo.
+    """
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Catálogo EPSG completo con pyproj
+    popular = list_popular_oilfield_crs()
+    assert any(p["epsg"] == "EPSG:5344" for p in popular)
+    res_click = search_projected_crs(click_lon=-69.23, click_lat=-46.63, category="argentina")
+    assert any(r["epsg"] == "EPSG:5344" for r in res_click)
+    res_utm = search_projected_crs(query="UTM zone 13N", category="utm")
+    assert any(r["epsg"] == "EPSG:32613" for r in res_utm)
+    det = get_crs_details("EPSG:5344")
+    assert det is not None and det["bounds"] is not None
+
+    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtWidgets import QApplication
+    from scripts.app_gui import APP_STYLESHEET, CRSSelectorDialog, WellCuratorMainWindow
+
+    app = QApplication.instance() or QApplication([])
+    for font_file in ("segoeui.ttf", "segoeuib.ttf", "consola.ttf"):
+        fp = Path("C:/Windows/Fonts") / font_file
+        if fp.exists():
+            QFontDatabase.addApplicationFont(str(fp))
+    app.setFont(QFont("Segoe UI", 9))
+    app.setStyle("Fusion")
+    app.setStyleSheet(APP_STYLESHEET)
+
+    win = WellCuratorMainWindow(initial_output_dir=OUTPUT_DIR)
+    win.show()
+    app.processEvents()
+
+    # 1. Arranque vacío por defecto: 0 pozos en Tab 1, Tab 3, Tab 4, Tab 5
+    assert win.tbl_import.rowCount() == 0
+    assert win.tbl_review.rowCount() == 0
+    assert win.cmb_log_well.count() == 0
+    assert win.tbl_out_excel.rowCount() == 0
+    empty_png = IMAGES_DIR / "gui_tab1_empty_startup.png"
+    win.grab().save(str(empty_png))
+    assert empty_png.exists() and empty_png.stat().st_size > 10000
+
+    # 2. Diálogo CRS estilo QGIS con clic en (-69.23, -46.63) -> POSGAR 2007 Faja 2 (EPSG:5344)
+    dlg = CRSSelectorDialog(parent=win)
+    dlg._set_map_bounds((-82, -45), (-58, -15))
+    dlg.click_lon = -69.23
+    dlg.click_lat = -46.63
+    dlg.cmb_cat.setCurrentIndex(1)  # Argentina
+    dlg._run_search()
+    dlg._select_epsg_in_table("EPSG:5344")
+    dlg._redraw_map()
+    dlg.show()
+    app.processEvents()
+    assert dlg.selected_epsg == "EPSG:5344"
+    crs_png = IMAGES_DIR / "gui_crs_world_map_selector.png"
+    dlg.grab().save(str(crs_png))
+    assert crs_png.exists() and crs_png.stat().st_size > 10000
+    dlg.close()
+
+    # 3. Aplicar EPSG al proyecto, añadir carpeta de pozo, guardar proyecto, limpiar y reabrir
+    win._set_forced_epsg("EPSG:5344")
+    win.tabs.setCurrentIndex(1)
+    app.processEvents()
+    tab2_png = IMAGES_DIR / "gui_tab2_config_crs.png"
+    win.grab().save(str(tab2_png))
+    assert tab2_png.exists() and tab2_png.stat().st_size > 10000
+
+    win.chk_include_input.setChecked(True)
+    win._run_prescan()
+    assert win.tbl_import.rowCount() == 6
+
+    proj_file = tmp_path / "cva_demo.wellcurator.json"
+    win.save_project_to_path(proj_file)
+    assert proj_file.exists()
+
+    # Limpiar a nuevo proyecto vacío
+    win._init_empty_project()
+    assert win.tbl_import.rowCount() == 0
+    assert len(win.prescanned_wells) == 0
+
+    # Reabrir proyecto guardado -> restaura EPSG:5344 y los pozos
+    win.load_project_from_path(proj_file)
+    assert win._selected_forced_epsg() == "EPSG:5344"
+    assert win.tbl_import.rowCount() >= 6
+    win.close()
+
+
 def test_rf1_pyside6_gui_headless_smoke_and_screenshots() -> None:
     """
-    RF-1 / RNF-4: Instancia la interfaz PySide6 completa en modo offscreen, carga los pozos
-    reales de `Input/` y `output/`, verifica las 5 pestañas y guarda capturas PNG en `images/`.
+    RF-1 / RNF-4: Instancia la interfaz PySide6 en modo offscreen, carga los pozos
+    reales de `Input/` simulando que el usuario los activó, verifica las 5 pestañas y guarda capturas PNG en `images/`.
     """
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -222,7 +317,8 @@ def test_rf1_pyside6_gui_headless_smoke_and_screenshots() -> None:
     win.show()
     assert win.tabs.count() == 5
 
-    # Simular pre-escaneo y carga de metadatos desde caché de output/ para poblar Pestañas 3 y 4
+    # Simular que el usuario marca cargar desde Input/ y ejecuta pre-escaneo
+    win.chk_include_input.setChecked(True)
     win._run_prescan()
     inv = load_output_inventory(OUTPUT_DIR)
     cache_by_folder = {c["well_folder_name"]: c["metadata"] for c in inv["cache_records"]}

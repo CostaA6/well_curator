@@ -14,12 +14,17 @@ import logging
 import re
 import shutil
 import zipfile
+from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import folium
 import pandas as pd
 import pyproj
+from pyproj.aoi import AreaOfInterest
+from pyproj.database import query_crs_info
+from pyproj.enums import PJType
 
 from scripts.las_explorer import WellExplorationResult
 
@@ -370,3 +375,155 @@ def load_output_inventory(output_dir: Path) -> Dict[str, object]:
         "errors_text": errors_text,
         "cache_records": cache_records,
     }
+
+
+# ----------------------------------------------------------------------
+# CATÁLOGO CRS COMPLETO (PYPROJ DATABASE) Y MAPA MUNDI (Spec 004 - RF-8)
+# ----------------------------------------------------------------------
+@lru_cache(maxsize=1)
+def _load_all_projected_epsg_raw() -> Tuple[Dict[str, object], ...]:
+    """Carga una sola vez los CRS proyectados EPSG desde la base geodésica de pyproj."""
+    infos = query_crs_info(auth_name="EPSG", pj_types=[PJType.PROJECTED_CRS])
+    items: List[Dict[str, object]] = []
+    for info in infos:
+        bounds = tuple(info.area_of_use.bounds) if info.area_of_use else None
+        area_name = str(info.area_of_use.name) if info.area_of_use else ""
+        items.append({
+            "epsg": f"EPSG:{info.code}",
+            "code": str(info.code),
+            "name": str(info.name),
+            "area_name": area_name,
+            "bounds": bounds,  # (west, south, east, north)
+        })
+    return tuple(items)
+
+
+def _crs_priority_score(item: Dict[str, object]) -> Tuple[int, int]:
+    """Prioriza sistemas modernos y de uso estándar en industria petrolera."""
+    name = str(item["name"])
+    if "POSGAR 2007" in name:
+        return (0, int(item["code"]))
+    if "WGS 84 / UTM zone" in name:
+        return (1, int(item["code"]))
+    if "POSGAR 94" in name or "POSGAR 98" in name:
+        return (2, int(item["code"]))
+    if "Campo Inchauspe" in name:
+        return (3, int(item["code"]))
+    if any(k in name for k in ("SIRGAS", "NAD83", "ETRS89", "ED50")):
+        return (4, int(item["code"]))
+    return (5, int(item["code"]))
+
+
+def search_projected_crs(
+    query: str = "",
+    click_lon: Optional[float] = None,
+    click_lat: Optional[float] = None,
+    category: str = "all",
+    limit: int = 250,
+) -> List[Dict[str, object]]:
+    """
+    Busca sistemas de coordenadas proyectados EPSG en `pyproj.database`:
+    - Si `click_lon` y `click_lat` están definidos, consulta únicamente CRS válidos en ese punto.
+    - Soporta filtro de texto libre (`EPSG`, `POSGAR`, `UTM`, país) y categoría (`all`, `argentina`, `utm`).
+    """
+    if click_lon is not None and click_lat is not None:
+        aoi = AreaOfInterest(click_lon, click_lat, click_lon, click_lat)
+        infos = query_crs_info(
+            auth_name="EPSG",
+            pj_types=[PJType.PROJECTED_CRS],
+            area_of_interest=aoi,
+        )
+        source_items = [
+            {
+                "epsg": f"EPSG:{i.code}",
+                "code": str(i.code),
+                "name": str(i.name),
+                "area_name": str(i.area_of_use.name) if i.area_of_use else "",
+                "bounds": tuple(i.area_of_use.bounds) if i.area_of_use else None,
+            }
+            for i in infos
+        ]
+    else:
+        source_items = list(_load_all_projected_epsg_raw())
+
+    q = query.strip().lower()
+    cat = category.lower()
+    filtered: List[Dict[str, object]] = []
+
+    for item in source_items:
+        name_l = str(item["name"]).lower()
+        area_l = str(item["area_name"]).lower()
+        epsg_l = str(item["epsg"]).lower()
+
+        if cat == "argentina" and not any(
+            k in name_l or k in area_l for k in ("posgar", "argentina", "inchauspe", "chubut", "neuquen")
+        ):
+            continue
+        if cat == "utm" and "utm zone" not in name_l:
+            continue
+
+        if q and not (q in epsg_l or q in name_l or q in area_l):
+            continue
+        filtered.append(item)
+
+    filtered.sort(key=_crs_priority_score)
+    return filtered[:limit]
+
+
+def get_crs_details(epsg_code: str) -> Optional[Dict[str, object]]:
+    """Retorna metadatos y `area_of_use.bounds` de un EPSG específico."""
+    norm = epsg_code.strip().upper()
+    if not norm.startswith("EPSG:") and norm.isdigit():
+        norm = f"EPSG:{norm}"
+    for item in _load_all_projected_epsg_raw():
+        if item["epsg"] == norm:
+            return item
+    return None
+
+
+def list_popular_oilfield_crs() -> List[Dict[str, object]]:
+    """Lista curada de CRS frecuentes para poblar el desplegable rápido de Pestaña 2."""
+    preferred_codes = [
+        "5343", "5344", "5345", "5346", "5347", "5348", "5349",  # POSGAR 2007 Fajas 1-7
+        "22181", "22182", "22183", "22184", "22185", "22186", "22187",  # POSGAR 94
+        "22191", "22192", "22193", "22194", "22195", "22196", "22197",  # Campo Inchauspe
+        "32718", "32719", "32720", "32721",  # UTM Sur Sudamérica
+        "32613", "32614", "32615", "32618", "32619",  # UTM Norte Américas
+        "3116", "31983", "31984",  # Colombia MAGNA-SIRGAS / Brasil SIRGAS 2000
+    ]
+    by_code = {str(it["code"]): it for it in _load_all_projected_epsg_raw()}
+    return [by_code[c] for c in preferred_codes if c in by_code]
+
+
+def load_world_continents_geometry() -> Dict[str, object]:
+    """Carga la geometría offline de continentes y Argentina para el Mapa Mundi QGIS."""
+    geom_path = PROJECT_ROOT / "config" / "world_continents.json"
+    if not geom_path.exists():
+        return {"continents": [], "argentina_outline": []}
+    return json.loads(geom_path.read_text(encoding="utf-8"))
+
+
+# ----------------------------------------------------------------------
+# PERSISTENCIA DE PROYECTOS (Spec 004 - RF-7)
+# ----------------------------------------------------------------------
+def save_project_file(project_path: Path, project_state: Dict[str, object]) -> Path:
+    """Guarda el proyecto completo (`*.wellcurator.json`) sin almacenar secretos de API keys."""
+    payload = dict(project_state)
+    payload["version"] = "1.0"
+    payload["saved_at"] = datetime.now(timezone.utc).isoformat()
+    llm_cfg = dict(payload.get("llm_config") or {})
+    llm_cfg.pop("api_key", None)  # Nunca persistir secretos en disco
+    payload["llm_config"] = llm_cfg
+
+    project_path.parent.mkdir(parents=True, exist_ok=True)
+    project_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return project_path
+
+
+def load_project_file(project_path: Path) -> Dict[str, object]:
+    """Carga un proyecto guardado (`*.wellcurator.json`)."""
+    data = json.loads(project_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or "wells" not in data:
+        raise ValueError(f"El archivo {project_path.name} no es un proyecto válido de Well Curator.")
+    return data
+
