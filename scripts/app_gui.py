@@ -588,9 +588,11 @@ class LLMExtractionWorker(QThread):
 
                     if self.incremental and (fname in existing_wells or res.well_folder_name in existing_wells):
                         if fname in cached_meta:
-                            res.llm_metadata = normalize_well_metadata(cached_meta[fname], profile=self.profile, fallback_well_name=fname)
+                            norm_m = normalize_well_metadata(cached_meta[fname], profile=self.profile, fallback_well_name=fname)
+                            norm_m["_extraction_mode"] = "CACHÉ INCREMENTAL (sin invocar LLM)"
+                            res.llm_metadata = norm_m
                             self.well_ready_sig.emit(fname, res, dfs)
-                            self.log_sig.emit(f"[INCREMENTAL] {fname} ya curado; cargado para inspección.")
+                            self.log_sig.emit(f"[INCREMENTAL] {fname} ya curado; cargado desde caché.")
                             continue
 
                     explored_list.append((fname, wdir, res, dfs))
@@ -602,19 +604,25 @@ class LLMExtractionWorker(QThread):
             cache_only_items = [item for item in explored_list if item[0] in cached_meta]
 
             for fname, _, res, dfs in cache_only_items:
-                res.llm_metadata = normalize_well_metadata(cached_meta[fname], profile=self.profile, fallback_well_name=fname)
+                norm_m = normalize_well_metadata(cached_meta[fname], profile=self.profile, fallback_well_name=fname)
+                norm_m["_extraction_mode"] = "CACHÉ (sin invocar LLM)"
+                res.llm_metadata = norm_m
                 self.well_ready_sig.emit(fname, res, dfs)
 
             if need_llm_items:
-                self.log_sig.emit(f"Conectando con proveedor LLM ({self.llm_config.provider}: {self.llm_config.model_name})...")
+                self.log_sig.emit(f"Iniciando servidor / cliente LLM ({self.llm_config.provider}: {self.llm_config.model_name})...")
                 with ManagedLLMSession(self.llm_config) as session:
                     for idx, (fname, _, res, dfs) in enumerate(need_llm_items, start=1):
-                        self.progress_sig.emit(idx, len(need_llm_items), f"Extrayendo metadatos LLM: {fname}...")
+                        self.progress_sig.emit(idx, len(need_llm_items), f"Extrayendo con LLM ({self.llm_config.model_name}): {fname}...")
                         try:
                             meta = session.extract_well_metadata(
                                 consolidated_header_block=res.consolidated_header_block,
                                 field_profile=self.profile,
                                 fallback_well_name=fname,
+                            )
+                            meta["_extraction_mode"] = (
+                                f"LLM EN VIVO ({self.llm_config.provider}: {self.llm_config.model_name}, "
+                                f"{meta.get('_inference_time_s', '?')} s)"
                             )
                             res.llm_metadata = meta
                             self.well_ready_sig.emit(fname, res, dfs)
@@ -952,9 +960,9 @@ class WellCuratorMainWindow(QMainWindow):
         self.cmb_repeat_strategy.addItem("Conservar todas con sufijo (:2, :3, :4) [keep_all]", "keep_all")
         self.cmb_repeat_strategy.addItem("Fusionar corridas en una sola curva [merge]", "merge")
 
-        self.chk_incremental = QCheckBox("Modo Incremental (cargar/saltear pozos ya presentes en output/)")
-        self.chk_use_cache = QCheckBox("Usar Caché de Metadatos (output/metadata_cache/)")
-        self.chk_use_cache.setChecked(True)
+        self.chk_incremental = QCheckBox("Modo Incremental (saltear pozos ya presentes en output/)")
+        self.chk_use_cache = QCheckBox("Omitir LLM usando Caché si existe (output/metadata_cache/)")
+        self.chk_use_cache.setChecked(False)
 
         out_row = QHBoxLayout()
         self.txt_output_dir = QLineEdit(str(self.output_dir))
@@ -1354,7 +1362,7 @@ class WellCuratorMainWindow(QMainWindow):
         rep_s = str(data.get("repeat_strategy") or "keep_all")
         self.cmb_repeat_strategy.setCurrentIndex(0 if rep_s == "keep_all" else 1)
         self.chk_incremental.setChecked(bool(data.get("incremental", False)))
-        self.chk_use_cache.setChecked(bool(data.get("use_cache", True)))
+        self.chk_use_cache.setChecked(bool(data.get("use_cache", False)))
 
         llm_d = data.get("llm_config") or {}
         if llm_d.get("provider"):
@@ -1720,11 +1728,12 @@ class WellCuratorMainWindow(QMainWindow):
 
         report_parts = [
             f"POZO: {meta.get('nombre_pozo', fname)} (UWI: {meta.get('uwi', 'S/D')})",
+            f"Motor / Origen: {meta.get('_extraction_mode') or ('LLM EN VIVO' if meta.get('_inference_time_s') else 'CACHÉ')}",
             f"CRS / Geodesia: {meta.get('crs_used', 'S/D')} — {meta.get('coord_resolution_note', '')}",
             f"Fuente en Header: {meta.get('fuente_coordenadas', 'S/D')}",
             "",
             "REPORTE DEL LLM:",
-            str(meta.get("resumen_normalizacion") or "Sin resumen escrito disponible (cargado desde caché anterior)."),
+            str(meta.get("resumen_normalizacion") or "Sin resumen escrito disponible (cargado desde caché anterior sin ese campo; desmarcá 'Omitir LLM usando Caché' para generarlo en vivo)."),
         ]
         self.txt_llm_report.setPlainText("\n".join(report_parts))
 
