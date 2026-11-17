@@ -52,6 +52,14 @@ class FieldProfile:
     )
 
 
+def list_field_profiles(config_dir: Path = FIELDS_CONFIG_DIR) -> List[str]:
+    """Lista los nombres de perfiles de campo disponibles en `config/fields/*.json`."""
+    if not config_dir.exists():
+        return ["generic"]
+    names = sorted(p.stem for p in config_dir.glob("*.json"))
+    return names or ["generic"]
+
+
 def load_field_profile(profile_or_path: str | Path = "generic") -> FieldProfile:
     """
     Carga un `FieldProfile` desde `config/fields/<nombre>.json` o desde una ruta explícita.

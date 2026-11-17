@@ -80,10 +80,12 @@ def build_unified_well_depth_df(
     well_dfs: Dict[str, pd.DataFrame],
     normalized_meta: Dict[str, object],
     repeat_strategy: Literal["keep_all", "merge"] = "keep_all",
+    per_curve_repeat_strategy: Optional[Dict[str, Literal["keep_all", "merge"]]] = None,
 ) -> Tuple[pd.DataFrame, float, float, float, List[str]]:
     """
     Construye el DataFrame unificado en profundidad para un pozo usando el paso más chico
     entre todos sus archivos .LAS de profundidad (Spec 002 - RF-2, RF-3, RF-4).
+    Soporta `per_curve_repeat_strategy` para decidir por curva repetida (`keep_all` vs `merge`).
 
     Retorna:
       (unified_df, grid_start, grid_stop, grid_step, exported_curve_names)
@@ -171,7 +173,13 @@ def build_unified_well_depth_df(
                         in_gap = (grid_depths > gap_start + 1e-4) & (grid_depths < gap_end - 1e-4)
                         projected[in_gap] = np.nan
 
-            if repeat_strategy == "keep_all":
+            curve_strategy = (
+                per_curve_repeat_strategy.get(curve_occ.original_mnemonic, repeat_strategy)
+                if per_curve_repeat_strategy
+                else repeat_strategy
+            )
+
+            if curve_strategy == "keep_all":
                 col_name = curve_occ.assigned_name
                 curve_columns[col_name] = projected
             else:
@@ -394,24 +402,31 @@ def export_well_to_output(
     well_dfs: Dict[str, pd.DataFrame],
     output_dir: Path,
     repeat_strategy: Literal["keep_all", "merge"] = "keep_all",
+    per_curve_repeat_strategy: Optional[Dict[str, Literal["keep_all", "merge"]]] = None,
     update_excel: bool = True,
     field_profile: Optional[FieldProfile] = None,
     save_metadata_cache: bool = True,
+    manual_override: bool = False,
 ) -> WellExportSummary:
     """
     Ejecuta el flujo completo de exportación para un pozo hacia `output/`:
-    1. Normaliza metadatos según `FieldProfile` y proyecta coordenadas Lat/Lon si aplica (`pyproj`).
+    1. Normaliza metadatos según `FieldProfile` (o respeta edición manual si `manual_override=True`).
     2. Construye el CSV de curvas en profundidad en `output/wells/<Well>_selected.csv` con `NaN`.
     3. Exporta los archivos en tiempo (`TIME.S` / XPT / MDT) en `output/time_logs/`.
     4. Guarda caché de metadatos JSON en `output/metadata_cache/` (Spec 003 - RF-7).
     5. Actualiza `output/well_metadata.xlsx`.
     """
-    raw_meta = well.llm_metadata or {}
-    norm_meta = normalize_well_metadata(
-        raw_meta,
-        profile=field_profile,
-        fallback_well_name=well.well_folder_name,
-    )
+    raw_meta = dict(well.llm_metadata or {})
+    if manual_override:
+        norm_meta = raw_meta
+        if not norm_meta.get("nombre_pozo"):
+            norm_meta["nombre_pozo"] = well.well_folder_name
+    else:
+        norm_meta = normalize_well_metadata(
+            raw_meta,
+            profile=field_profile,
+            fallback_well_name=well.well_folder_name,
+        )
     well.llm_metadata = norm_meta
 
     well_name = str(norm_meta["nombre_pozo"])
@@ -427,6 +442,7 @@ def export_well_to_output(
         well_dfs=well_dfs,
         normalized_meta=norm_meta,
         repeat_strategy=repeat_strategy,
+        per_curve_repeat_strategy=per_curve_repeat_strategy,
     )
 
     wells_dir = output_dir / "wells"

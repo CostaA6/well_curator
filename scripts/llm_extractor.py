@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 from scripts.field_profiles import FieldProfile, normalize_well_metadata
 
@@ -46,6 +46,7 @@ METADATA_JSON_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
         },
+        "resumen_normalizacion": {"type": "string"},
     },
     "required": [
         "nombre_pozo",
@@ -59,6 +60,7 @@ METADATA_JSON_SCHEMA = {
         "referencia_cota",
         "fuente_coordenadas",
         "curvas_detectadas",
+        "resumen_normalizacion",
     ],
     "additionalProperties": False,
 }
@@ -78,6 +80,7 @@ Reglas críticas de extracción:
 5. referencia_cota: Referencia de la cota (ej. "NIVEL DEL TERRENO", "N.T.", "GL", "KB") según PDAT/LMF/DMF/EGL.
 6. fuente_coordenadas: Breve nota indicando de qué campos del header tomaste las coordenadas y la cota.
 7. curvas_detectadas: Lista con los mnemónicos de las curvas presentes en la sección ~Curve de los archivos de PROFUNDIDAD (DEPTH) del pozo (excluyendo la columna índice DEPT/DEPTH). Si una curva se repite, inclúyela con sufijo ":2", ":3", etc.
+8. resumen_normalizacion: Informe técnico breve en español (3 a 5 oraciones) explicando qué archivos .LAS se analizaron, qué conflictos o inconsistencias se detectaron (UWI vacío/truncado, códigos internos, coordenadas faltantes o cruzadas, archivos en tiempo XPT), qué campos del encabezado sustentan Nombre/UWI/X/Y/Cota y qué curvas clave o repetidas se identificaron.
 """
 
 
@@ -452,3 +455,52 @@ class ManagedLLMSession:
         if self._local_server is not None:
             self._local_server.stop()
             self._local_server = None
+
+
+def list_local_gguf_models(models_dir: Path = PROJECT_ROOT / "model") -> List[Path]:
+    """Lista todos los archivos .gguf disponibles localmente."""
+    if not models_dir.exists():
+        return []
+    return sorted(models_dir.glob("*.gguf"))
+
+
+def test_llm_connection(config: LLMConfig) -> Tuple[bool, str, List[str]]:
+    """
+    Verifica conectividad o disponibilidad del proveedor LLM configurado (Spec 004 - RF-3).
+    Retorna `(ok, mensaje, lista_modelos_disponibles)`.
+    """
+    if config.provider == "llama_cpp_local":
+        if not config.server_bin.exists():
+            return False, f"No se encontró binario llama-server.exe en {config.server_bin}", []
+        if not config.model_path.exists():
+            return False, f"No se encontró el archivo GGUF en {config.model_path}", []
+        ggufs = [p.name for p in list_local_gguf_models(config.model_path.parent)]
+        return (
+            True,
+            f"Listo para inferencia local con {config.model_path.name} en {config.gpu_device}.",
+            ggufs,
+        )
+
+    base = config.base_url.rstrip("/")
+    models_url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+    headers = {"Content-Type": "application/json"}
+    api_key = config.resolve_api_key()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        req = urllib.request.Request(models_url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        models = [
+            str(item.get("id"))
+            for item in data.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        ]
+        return True, f"Conexión exitosa a {models_url} ({len(models)} modelos).", models
+    except urllib.error.HTTPError as e:
+        err = e.read().decode("utf-8", errors="replace")
+        return False, f"Error HTTP {e.code} al conectar con {models_url}: {err[:200]}", []
+    except Exception as exc:
+        return False, f"No se pudo conectar con {models_url}: {exc}", []
+
