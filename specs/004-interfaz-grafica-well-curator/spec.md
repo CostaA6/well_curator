@@ -20,8 +20,8 @@ La aplicación presentará una barra superior/lateral de estado del sistema (pro
 ### RF-2 — Pestaña 1: Importación Flexible (`+ Añadir Pozo` y `Lote de Carpetas`)
 Debe permitir incorporar datos de entrada mediante tres mecanismos sin modificar nunca los archivos originales:
 1. **Drag & Drop de Pozo Individual ("Añadir Pozo")**:
-   - Soltar **múltiples archivos `.las`/`.LAS` sueltos** pertenecientes a un pozo (ingresando o auto-sugiriendo el nombre del pozo destino) **o** soltar una **carpeta de pozo** **o** un archivo **`.zip`** comprimido con sus archivos `.las`.
-   - Los archivos ingresados por UI se copian/organizan en un workspace temporal de sesión o carpeta de staging controlada (nunca alterando `Input/`).
+   - Soltar directamente desde el Explorador de Windows **múltiples archivos `.las`/`.LAS` sueltos** pertenecientes a un pozo (ingresando o auto-sugiriendo el nombre del pozo destino), una **carpeta completa de pozo**, o un archivo **`.zip`** comprimido con sus `.las`.
+   - Los archivos ingresados por *Drag & Drop* o selector individual se organizan en una carpeta dedicada **`workspace_imports/<Pozo>/`**, manteniendo `Input/` completamente intacta y conservando los archivos importados para reprocesamientos futuros.
 2. **Importación de Directorio Batch ("Importar Fichero de Carpetas")**:
    - Seleccionar una carpeta raíz con subcarpetas por pozo (ej. `Input/` o equivalente en disco del cliente).
 3. **Pre-escaneo instantáneo en Python**:
@@ -46,9 +46,9 @@ Debe permitir incorporar datos de entrada mediante tres mecanismos sin modificar
 
 ### RF-4 — Pestaña 3: Ejecución, Auditoría de Nombres y Reporte Escrito por el LLM
 1. **Ejecución en vivo con progreso**: barra de avance por pozo, tiempo estimado y consola de eventos en tiempo real (con aislamiento de fallos en `output/batch_errors.log`).
-2. **Tabla comparativa de Normalización**: mostrar por pozo:
+2. **Tabla comparativa de Normalización y Revisión Supervisada**: mostrar por pozo:
    - `Carpeta/Archivo origen` → `Nombre Pozo normalizado`, `UWI`, `X`, `Y`, `Cota`, `CRS aplicado`, `Step`.
-   - Posibilidad de inspección y corrección manual asistida antes de re-exportar desde caché.
+   - **Edición manual opcional antes de exportar**: el usuario puede editar directamente cualquier campo extraído (`Nombre`, `UWI`, `X`, `Y`, `Cota`) y ajustar el tratamiento de curvas repetidas (global o curva por curva: mantener `:2`, `:3` o fusionar en una sola) antes de confirmar la escritura en `output/`.
 3. **Reporte Escrito por el LLM (`resumen_normalizacion`)**:
    - Extender el esquema/prompt del extractor para que el LLM redacte un **informe breve y claro en lenguaje natural** por cada pozo explicando:
      - Qué archivos analizó y si hubo conflictos entre ellos (ej. UWI vacío/truncado, códigos internos temporales, errores de tipeo).
@@ -63,8 +63,8 @@ Replicar y hacer interactivas dentro de la app todas las validaciones visuales d
    - Reproyectar internamente las coordenadas planas curadas `(X, Y, CRS)` hacia `EPSG:4326` (`Lat/Lon`) mediante `pyproj` para posicionar todos los pozos sobre un mapa geográfico real (satelital / topográfico / OpenStreetMap).
    - Mostrar popup/etiqueta con Nombre normalizado, UWI, coordenadas planas, CRS (`EPSG`), rango `Start–Stop` y cantidad de curvas; distinguir visualmente pozos GK directos vs proyectados desde Lat/Lon.
 2. **Visor Interactivo de Registros (Logs)**:
-   - Selector de pozo y selector múltiple de curvas (incluyendo repeticiones `:2`, `:3`).
-   - Gráfico multi-track de curvas vs profundidad con zoom/pan interactivo, modo **Validación Crudo vs Grilla Común** (superponiendo puntos originales `.las` sobre la curva exportada en CSV para verificar ausencia de artefactos/extrapolaciones y brechas `NaN`), y soporte de visualización para curvas `FT → M`.
+   - Selector de pozo y selector múltiple de hasta **6 curvas en tracks paralelos** (incluyendo repeticiones `:2`, `:3`).
+   - Gráfico multi-track de curvas vs profundidad con barra de zoom/pan interactivo, modo **Validación Crudo vs Grilla Común** (superponiendo puntos originales `.las` sobre la curva exportada en CSV para verificar ausencia de artefactos/extrapolaciones y brechas `NaN`), y soporte de visualización para curvas `FT → M`.
 3. **Panel de Cobertura, Matriz y Estaciones en Tiempo**:
    - Gráfico de cobertura por archivo `.las` (`STRT–STOP`, paso y estaciones `TIME.S` / `XPT`).
    - Mapa visual interactivo de la matriz `yes`/`no` de `well_metadata.xlsx`.

@@ -1,8 +1,8 @@
-# Tareas — Spec 004: Interfaz Gráfica Well Curator
+# Tareas — Spec 004: Interfaz Gráfica PySide6 (Well Curator GUI)
 
 - [x] **T1**: Crear rama `feat/spec-004-gui` y redactar especificación completa (`spec.md`, `plan.md`, `tasks.md`) en `specs/004-interfaz-grafica-well-curator/`.
-- [ ] **T2**: Confirmar con el usuario el framework gráfico (`PySide6` escritorio nativo vs `Streamlit` web local) y detalles de comportamiento de staging/edición.
-- [ ] **T3**: Extender `scripts/llm_extractor.py` para incluir el reporte escrito `resumen_normalizacion` en el esquema JSON del LLM (y soporte de verificación de conexión / listado de modelos en servidores OpenAI-compatibles).
-- [ ] **T4**: Implementar `scripts/ui_controller.py` (staging seguro de drag & drop de archivos sueltos / `.zip` / carpetas, pre-escaneo, reproyección inversa a WGS84 para mapa geográfico, y extractor de series para visor de logs Crudo vs Grilla Común).
-- [ ] **T5**: Implementar la interfaz gráfica de 5 pestañas (`scripts/app_gui.py`) con aspecto comercial clásico-moderno, ejecución asíncrona, reporte del LLM, mapa geográfico, visor interactivo de registros y explorador de `output/`.
-- [ ] **T6**: Crear la suite de tests `tests/004-interfaz-grafica-well-curator/test_spec_004.py` + evidencias visuales en `images/`, actualizar `AGENTS.md` y `MEMORY.md`, y subir cambios a GitHub.
+- [x] **T2**: Confirmar con el usuario el stack gráfico (`PySide6` escritorio nativo Qt6 + `Matplotlib` + `Folium`/`QWebEngineView`), staging en `workspace_imports/<Pozo>/`, revisión/edición supervisada y alcance del visor de logs (hasta 6 tracks + mapa geográfico).
+- [ ] **T3**: Extender `scripts/llm_extractor.py` para incluir el reporte escrito `resumen_normalizacion` en el esquema JSON del LLM y `test_llm_connection(config)`.
+- [ ] **T4**: Extender `scripts/well_exporter.py` (soporte opcional de overrides manuales y estrategia por curva repetida) y crear `scripts/ui_controller.py` (staging en `workspace_imports/`, pre-escaneo, reproyección inversa a WGS84, mapa Folium y series de comparación Crudo vs CSV).
+- [ ] **T5**: Implementar la interfaz gráfica `PySide6` de 5 pestañas (`scripts/app_gui.py`) con Drag & Drop nativo (carpetas, archivos `.las`, `.zip`), selector de modelo LLM/perfil, revisión supervisada + reporte LLM, mapa geográfico, visor interactivo multi-track (hasta 6 tracks) y explorador de `output/`.
+- [ ] **T6**: Crear la suite de tests `tests/004-interfaz-grafica-well-curator/test_spec_004.py` (controlador UI + smoke test headless de widgets PySide6 + capturas/evidencias visuales en `images/`), actualizar `AGENTS.md` y `MEMORY.md`, y subir cambios a GitHub.
