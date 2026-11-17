@@ -74,7 +74,7 @@ Reglas críticas de extracción:
 2. uwi: Identificador único oficial del pozo (busca en UWI, UWID o API) SIEMPRE EN MAYÚSCULAS y sin espacios internos. Si hay conflictos entre archivos preliminares y definitivos del mismo pozo (ej. UWI vacío, truncado o código interno temporal), elige el identificador oficial más completo.
 3. Coordenadas (extracción dual para priorizar Gauss-Krüger y soportar Lat/Lon):
    - coord_x y coord_y: Coordenadas planas proyectadas (Gauss-Krüger o UTM) en formato numérico decimal estándar (punto decimal, sin separador de miles; ej. 2.481.797,29 -> 2481797.29). Respeta X/Este y Y/Norte si aparecen en LOC, FL1, XWELL, YWELL o LONG/LATI cuando contengan valores métricos (>100000). Si no existen coordenadas planas, usa null.
-   - latitud y longitud: Coordenadas geográficas en grados decimales (WGS84/POSGAR, ej. -46.6312, -69.2345). Si aparecen en formato Grados-Minutos-Segundos (ej. 46d 37' 52.3" S), conviértelas a grados decimales con signo negativo para Sur (S) y Oeste (W). Si no aparecen en el header, usa null.
+   - latitud y longitud: Coordenadas geográficas REALES en grados decimales (rango -90..90 y -180..180, o Grados-Minutos-Segundos convertidos a grados). Si los campos LATI/LONG contienen coordenadas planas métricas (>100000 como 2.481.587,54), van en coord_x/coord_y y latitud/longitud deben ser null (NUNCA dividas metros por 100000 ni inventes grados).
    - sistema_coordenadas_origen: Indica "GAUSS_KRUGER", "UTM", "LAT_LON", "AMBOS" o "DESCONOCIDO".
 4. cota: Elevación del terreno (GL/EPD/EGL) o datum permanente en metros como número decimal (ej. 294,14 -> 294.14). Usa null si no figura.
 5. referencia_cota: Referencia de la cota (ej. "NIVEL DEL TERRENO", "N.T.", "GL", "KB") según PDAT/LMF/DMF/EGL.
