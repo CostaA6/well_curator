@@ -833,8 +833,14 @@ class WellCuratorMainWindow(QMainWindow):
         self.chk_include_imports.setChecked(False)
         self.chk_include_imports.stateChanged.connect(self._refresh_discovered_wells)
 
+        imports_row = QHBoxLayout()
+        imports_row.addWidget(self.chk_include_imports)
+        btn_clear_imports = QPushButton("Vaciar workspace_imports/")
+        btn_clear_imports.clicked.connect(self._clear_workspace_imports_clicked)
+        imports_row.addWidget(btn_clear_imports)
+
         batch_layout.addWidget(self.chk_include_input)
-        batch_layout.addWidget(self.chk_include_imports)
+        batch_layout.addLayout(imports_row)
 
         batch_btn_row = QHBoxLayout()
         btn_add_batch_dir = QPushButton("Añadir Carpeta Batch...")
@@ -1543,6 +1549,24 @@ class WellCuratorMainWindow(QMainWindow):
                 self.batch_extra_roots.append(p)
                 self.lbl_batch_roots.setText("Carpetas batch adicionales: " + ", ".join(r.name for r in self.batch_extra_roots))
                 self._refresh_discovered_wells()
+
+    def _clear_workspace_imports_clicked(self) -> None:
+        if not WORKSPACE_IMPORTS_DIR.exists():
+            QMessageBox.information(self, "workspace_imports/", "La carpeta workspace_imports/ ya está vacía.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Vaciar workspace_imports/",
+            "¿Seguro que querés eliminar las copias importadas dentro de workspace_imports/? (Input/ no se toca)",
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import shutil as _shutil
+            _shutil.rmtree(WORKSPACE_IMPORTS_DIR, ignore_errors=True)
+            self.project_manual_wells = [
+                w for w in self.project_manual_wells
+                if not str(Path(str(w["folder_path"])).resolve()).startswith(str(WORKSPACE_IMPORTS_DIR.resolve()))
+            ]
+            self._refresh_discovered_wells()
 
     def _browse_output_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Seleccionar carpeta output/", str(self.output_dir))

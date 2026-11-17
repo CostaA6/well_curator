@@ -138,6 +138,53 @@ def _validate_extracted_payload(data: Dict[str, object]) -> None:
         raise ValueError("'curvas_detectadas' debe ser una lista JSON.")
 
 
+def _fit_header_block_to_ctx(
+    consolidated_header_block: str,
+    ctx_size: int,
+    max_tokens: int,
+) -> str:
+    """
+    Si un pozo tiene muchísimos .LAS y supera el presupuesto estimado del contexto,
+    recorta secciones ~Parameter/~Other redundantes de archivos secundarios manteniendo
+    intactos todos los bloques ~Well y ~Curve para evitar HTTP 400 exceed_context_size_error.
+    """
+    budget_tokens = max(2048, ctx_size - max_tokens - 1400)
+    # Estimación conservadora (~2.8 chars/token para texto técnico denso con números)
+    max_chars = int(budget_tokens * 2.8)
+    if len(consolidated_header_block) <= max_chars:
+        return consolidated_header_block
+
+    logger.warning(
+        "Bloque de encabezados extenso (%d chars > %d máx. para ctx=%d); compactando ~Parameter secundarios.",
+        len(consolidated_header_block),
+        max_chars,
+        ctx_size,
+    )
+    out_lines: List[str] = []
+    current_section = ""
+    file_idx = 0
+    for line in consolidated_header_block.splitlines():
+        s = line.strip()
+        if s.startswith("================"):
+            file_idx += 1
+            current_section = ""
+            out_lines.append(line)
+            continue
+        if s.startswith("~"):
+            current_section = s[1:].lstrip().upper()[:1]
+            out_lines.append(line)
+            continue
+        # En archivos secundarios (>= 2), omitir líneas largas de ~Parameter / ~Other
+        if file_idx >= 2 and current_section in ("P", "O"):
+            continue
+        out_lines.append(line)
+
+    trimmed = "\n".join(out_lines)
+    if len(trimmed) > max_chars:
+        trimmed = trimmed[:max_chars] + "\n... [TRUNCADO POR LÍMITE DE CONTEXTO]\n"
+    return trimmed
+
+
 class OpenAICompatibleLLMClient:
     """
     Cliente universal para cualquier servidor `/v1/chat/completions`
@@ -203,11 +250,16 @@ class OpenAICompatibleLLMClient:
         Incluye fallback automático `json_schema -> json_object -> plain` y reintento si falla el parseo.
         """
         sys_prompt = build_system_prompt(field_profile)
+        fitted_block = _fit_header_block_to_ctx(
+            consolidated_header_block,
+            ctx_size=self.config.ctx_size,
+            max_tokens=self.config.max_tokens,
+        )
         schema_keys = ", ".join(METADATA_JSON_SCHEMA["properties"].keys())
         user_prompt = (
             "Lee los siguientes encabezados .LAS crudos del pozo y devuelve ÚNICAMENTE un objeto JSON válido "
             f"con estas claves exactas ({schema_keys}):\n\n"
-            f"{consolidated_header_block}"
+            f"{fitted_block}"
         )
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": sys_prompt},

@@ -22,7 +22,7 @@ import pytest
 
 from scripts.field_profiles import load_field_profile
 from scripts.las_explorer import explore_well_directory
-from scripts.llm_extractor import BASE_SYSTEM_PROMPT, METADATA_JSON_SCHEMA, LLMConfig
+from scripts.llm_extractor import BASE_SYSTEM_PROMPT, METADATA_JSON_SCHEMA, LLMConfig, _fit_header_block_to_ctx
 from scripts.llm_extractor import test_llm_connection as probe_llm_connection
 from scripts.ui_controller import (
     build_folium_well_map_html,
@@ -75,6 +75,21 @@ def test_rf2_staging_drag_and_drop_files_zip_and_folder(tmp_path: Path) -> None:
     dest3, files3 = stage_well_drop_items([INPUT_DIR / "YPF.SC.CVa-25"], target_well_name="CVA25_IMPORTADO", workspace_root=ws_root)
     assert dest3.name == "CVA25_IMPORTADO"
     assert len(files3) == 1
+
+    # 4. Protección contra soltar carpeta raíz multi-pozo (ej. Input/) en la zona de pozo único
+    with pytest.raises(ValueError, match="subcarpetas de pozos distintos"):
+        stage_well_drop_items([INPUT_DIR], target_well_name="LOTE_ENTERO", workspace_root=ws_root)
+
+    # 5. Protección de presupuesto de contexto para pozos con muchos .LAS
+    huge_block = (
+        "================ ARCHIVO: run1.las ================\n~Well\nWELL. TEST : Well\n~Curve\nGR.GAPI : GR\n"
+        + "================ ARCHIVO: run2.las ================\n~Well\nWELL. TEST : Well\n~Parameter\n"
+        + "\n".join([f"PAR{i}.  {i}.0 : Parametro largo de calibracion {i}" for i in range(1500)])
+        + "\n~Curve\nDT.US/F : Sonic\n"
+    )
+    fitted = _fit_header_block_to_ctx(huge_block, ctx_size=8192, max_tokens=2048)
+    assert len(fitted) < len(huge_block)
+    assert "~Well" in fitted and "DT.US/F" in fitted
 
     discovered = discover_well_sources([("workspace_imports/", ws_root)])
     names = {d["well_folder_name"] for d in discovered}

@@ -10,7 +10,9 @@
   "coord_decimals": 0,
   "uwi_pad_rules": [],
   "well_name_regex_replacements": [
-    ["\\s+", " "]
+    ["\\s+", " "],
+    ["\\.a-", "a-"],
+    ["\\.-", "-"]
   ],
   "prompt_domain_hints": "",
   "pressure_summary_mnemonics": [

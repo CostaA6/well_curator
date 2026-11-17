@@ -82,11 +82,26 @@ def stage_well_drop_items(
             continue
 
         if src.is_dir():
-            for child in sorted(src.rglob("*")):
-                if child.is_file() and child.suffix.lower() == ".las":
-                    target_file = dest_dir / child.name
-                    shutil.copy2(child, target_file)
+            direct_las = [c for c in sorted(src.iterdir()) if c.is_file() and c.suffix.lower() == ".las"]
+            if direct_las:
+                for child in direct_las:
+                    shutil.copy2(child, dest_dir / child.name)
                     imported_files.append(child.name)
+            else:
+                # Si la carpeta soltada contiene subcarpetas de pozos (un lote entero), advertir para no mezclarlos
+                sub_las_dirs = [
+                    d for d in sorted(src.iterdir())
+                    if d.is_dir() and any(f.is_file() and f.suffix.lower() == ".las" for f in d.iterdir())
+                ]
+                if len(sub_las_dirs) > 1:
+                    raise ValueError(
+                        f"La carpeta '{src.name}' contiene {len(sub_las_dirs)} subcarpetas de pozos distintos. "
+                        "Usá 'Añadir Carpeta Batch...' en el panel derecho para no mezclarlos en un solo pozo."
+                    )
+                for child in sorted(src.rglob("*")):
+                    if child.is_file() and child.suffix.lower() == ".las":
+                        shutil.copy2(child, dest_dir / child.name)
+                        imported_files.append(child.name)
 
         elif src.is_file() and src.suffix.lower() == ".las":
             target_file = dest_dir / src.name
