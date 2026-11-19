@@ -30,7 +30,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.field_profiles import FieldProfile, load_field_profile
 from scripts.las_explorer import explore_well_directory
 from scripts.llm_extractor import DEFAULT_MODEL_PATH, LLMConfig, ManagedLLMSession
-from scripts.well_exporter import WellExportSummary, export_well_to_output
+from scripts.well_exporter import (
+    WellExportSummary,
+    compute_batch_depth_grid_bounds,
+    export_well_to_output,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,6 +104,8 @@ def run_full_pipeline(
     incremental: bool = False,
     use_cache: bool = False,
     clean_output_first: bool = False,
+    grid_mode: Literal["per_well", "common_step", "global_grid"] = "per_well",
+    target_grid_step: Optional[float] = None,
 ) -> BatchRunReport:
     """Ejecuta el flujo curador de punta a punta con tolerancia a fallos y soporte multi-campo/multi-LLM."""
     started_at = datetime.now(timezone.utc).isoformat()
@@ -160,6 +166,32 @@ def run_full_pipeline(
 
     need_llm = any(wd.name not in cached_meta_by_folder for wd in pending_dirs)
 
+    batch_grid_step: Optional[float] = None
+    batch_grid_start: Optional[float] = None
+    batch_grid_stop: Optional[float] = None
+    if pending_dirs and grid_mode in ("common_step", "global_grid"):
+        scan_items = []
+        for wd in pending_dirs:
+            try:
+                w_res, w_dfs = explore_well_directory(wd, target_depth_unit=profile.target_depth_unit)
+                if w_res.las_files_count > 0:
+                    scan_items.append((w_res, w_dfs))
+            except Exception:
+                continue
+        if scan_items:
+            bounds = compute_batch_depth_grid_bounds(scan_items, target_step=target_grid_step)
+            batch_grid_step = bounds["chosen_step"]
+            if grid_mode == "global_grid":
+                batch_grid_start = bounds["global_start"]
+                batch_grid_stop = bounds["global_stop"]
+            logger.info(
+                "Regularización pre-exportación (%s): step=%sm | rango=[%s, %s]",
+                grid_mode,
+                batch_grid_step,
+                batch_grid_start if batch_grid_start is not None else "por pozo",
+                batch_grid_stop if batch_grid_stop is not None else "por pozo",
+            )
+
     def _process_one_well(wd: Path, session: Optional[ManagedLLMSession]) -> None:
         well_res, dfs = explore_well_directory(wd, target_depth_unit=profile.target_depth_unit)
         if well_res.las_files_count == 0:
@@ -185,6 +217,9 @@ def run_full_pipeline(
             update_excel=True,
             field_profile=profile,
             save_metadata_cache=True,
+            target_grid_step=batch_grid_step,
+            target_grid_start=batch_grid_start,
+            target_grid_stop=batch_grid_stop,
         )
 
         processed_wells.append({
@@ -284,6 +319,18 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--api-key-env", default="LLM_API_KEY")
     p.add_argument("--gpu-device", default="Vulkan1")
     p.add_argument("--repeat-strategy", choices=["keep_all", "merge"], default="keep_all")
+    p.add_argument(
+        "--grid-mode",
+        choices=["per_well", "common_step", "global_grid"],
+        default="per_well",
+        help="Regularización de grilla en profundidad: per_well, common_step o global_grid",
+    )
+    p.add_argument(
+        "--grid-step",
+        type=float,
+        default=None,
+        help="Paso de profundidad objetivo (m) cuando --grid-mode es common_step o global_grid",
+    )
     p.add_argument("--incremental", action="store_true", help="Saltea pozos ya presentes en output/")
     p.add_argument("--use-cache", action="store_true", help="Reutiliza JSON en output/metadata_cache/")
     p.add_argument("--clean", action="store_true", help="Limpia output/ antes de iniciar")
@@ -315,4 +362,6 @@ if __name__ == "__main__":
         incremental=args.incremental,
         use_cache=args.use_cache,
         clean_output_first=args.clean,
+        grid_mode=args.grid_mode,
+        target_grid_step=args.grid_step,
     )

@@ -95,6 +95,15 @@ Replicar y hacer interactivas dentro de la app todas las validaciones visuales d
   - Al hacer **clic en cualquier punto `(lon, lat)` del mapa**, filtra instantáneamente mediante `pyproj.aoi.AreaOfInterest` los CRS proyectados válidos en esa ubicación exacta.
   - Al seleccionar un CRS de la lista, dibuja en rojo su **`area_of_use.bounds`** sobre el mapa mundi (exactamente como QGIS) y muestra EPSG, nombre oficial y región de uso antes de aplicarlo al proyecto.
 
+### RF-9 — Regularización de Grilla Común de Profundidad Pre-Exportación y Selector de Carpeta `output/`
+- **Modos de Regularización de Profundidad (Pestaña 3 + `well_exporter.py` + `run_pipeline.py`)**:
+  - `Por pozo (paso más chico)` (`per_well`): comportamiento clásico, cada pozo se interpola sobre su propio paso más fino `[Start_pozo, Stop_pozo]`.
+  - `Mismo Paso Común (rango por pozo)` (`common_step`): todos los pozos del lote se interpolan con el mismo paso objetivo (`target_grid_step`, por defecto el menor del lote o un valor seleccionado/personalizado) manteniendo el rango `[Start_pozo, Stop_pozo]` alineado a múltiplos del paso.
+  - `Grilla Global Idéntica (mismo Start, Stop y Step)` (`global_grid`): calcula `[Global_Start, Global_Stop, Step]` sobre todos los pozos seleccionados de forma que todos los `<Well>_selected.csv` exportados compartan exactamente el mismo vector `DEPTH` y la misma cantidad de filas, dejando `NaN` fuera del intervalo medido real de cada curva (sin extrapolación).
+- **Vista previa antes de exportar**: en Pestaña 3, el usuario puede calcular/previsualizar `Global Start`, `Global Stop`, `Step` y cantidad de filas antes de disparar la exportación.
+- **Selector de carpeta de salida (`output/`) sincronizado en Pestañas 2, 3 y 5**:
+  - En Pestaña 3 (justo antes de exportar) y en Pestaña 5 (`5. Salidas`) se puede explorar o elegir cualquier carpeta `output/` existente o nueva, sincronizando automáticamente Pestaña 2, Pestaña 3, Pestaña 5, el badge superior y la vista de archivos generados.
+
 ---
 
 ## 3. Requerimientos No Funcionales (RNF)

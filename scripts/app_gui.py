@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -99,7 +100,11 @@ from scripts.ui_controller import (
     stage_well_drop_items,
     suggest_well_name_from_paths,
 )
-from scripts.well_exporter import WellExportSummary, export_well_to_output
+from scripts.well_exporter import (
+    WellExportSummary,
+    compute_batch_depth_grid_bounds,
+    export_well_to_output,
+)
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -654,12 +659,18 @@ class ExportWorker(QThread):
         output_dir: Path,
         global_repeat_strategy: Literal["keep_all", "merge"],
         profile: FieldProfile,
+        target_grid_step: Optional[float] = None,
+        target_grid_start: Optional[float] = None,
+        target_grid_stop: Optional[float] = None,
     ) -> None:
         super().__init__()
         self.items = items
         self.output_dir = output_dir
         self.global_repeat_strategy = global_repeat_strategy
         self.profile = profile
+        self.target_grid_step = target_grid_step
+        self.target_grid_start = target_grid_start
+        self.target_grid_stop = target_grid_stop
 
     def run(self) -> None:
         summaries: List[WellExportSummary] = []
@@ -677,6 +688,9 @@ class ExportWorker(QThread):
                     field_profile=self.profile,
                     save_metadata_cache=True,
                     manual_override=manual_edit,
+                    target_grid_step=self.target_grid_step,
+                    target_grid_start=self.target_grid_start,
+                    target_grid_stop=self.target_grid_stop,
                 )
                 summaries.append(ws)
                 self.exported_sig.emit(fname, ws)
@@ -973,6 +987,9 @@ class WellCuratorMainWindow(QMainWindow):
 
         out_row = QHBoxLayout()
         self.txt_output_dir = QLineEdit(str(self.output_dir))
+        self.txt_output_dir.editingFinished.connect(
+            lambda: self.set_output_dir(Path(self.txt_output_dir.text().strip() or str(PROJECT_ROOT / "output")))
+        )
         btn_out_dir = QPushButton("...")
         btn_out_dir.setFixedWidth(36)
         btn_out_dir.clicked.connect(self._browse_output_dir)
@@ -1018,6 +1035,69 @@ class WellCuratorMainWindow(QMainWindow):
         bar.addWidget(self.progress_bar, 1)
         bar.addWidget(self.lbl_progress)
         layout.addLayout(bar)
+
+        # Panel de regularización de grilla común pre-exportación y carpeta de salida (RF-9)
+        grp_pre_export = QGroupBox("Regularización de Grilla Común (Pre-Exportación) y Carpeta de Salida")
+        pre_layout = QVBoxLayout(grp_pre_export)
+        pre_layout.setContentsMargins(10, 6, 10, 6)
+        pre_layout.setSpacing(6)
+
+        grid_row = QHBoxLayout()
+        grid_row.addWidget(QLabel("Modo Grilla:"))
+        self.cmb_grid_mode = QComboBox()
+        self.cmb_grid_mode.addItem("Por pozo (paso más chico individual)", "per_well")
+        self.cmb_grid_mode.addItem("Mismo Paso Común (interpola al paso elegido)", "common_step")
+        self.cmb_grid_mode.addItem("Grilla Global Idéntica (mismo Start, Stop y Step)", "global_grid")
+        self.cmb_grid_mode.currentIndexChanged.connect(self._on_grid_option_changed)
+        grid_row.addWidget(self.cmb_grid_mode, 2)
+
+        grid_row.addWidget(QLabel("Paso [m]:"))
+        self.cmb_grid_step_preset = QComboBox()
+        self.cmb_grid_step_preset.addItem("Auto (menor del lote)", None)
+        self.cmb_grid_step_preset.addItem("0.0762 m (1/4 ft)", 0.0762)
+        self.cmb_grid_step_preset.addItem("0.1000 m (10 cm)", 0.10)
+        self.cmb_grid_step_preset.addItem("0.1524 m (1/2 ft)", 0.1524)
+        self.cmb_grid_step_preset.addItem("0.2000 m (20 cm)", 0.20)
+        self.cmb_grid_step_preset.addItem("0.3048 m (1 ft)", 0.3048)
+        self.cmb_grid_step_preset.addItem("0.5000 m", 0.50)
+        self.cmb_grid_step_preset.addItem("1.0000 m", 1.00)
+        self.cmb_grid_step_preset.addItem("Personalizado...", "custom")
+        self.cmb_grid_step_preset.currentIndexChanged.connect(self._on_grid_option_changed)
+        grid_row.addWidget(self.cmb_grid_step_preset, 1)
+
+        self.spn_custom_grid_step = QDoubleSpinBox()
+        self.spn_custom_grid_step.setRange(0.0050, 50.0)
+        self.spn_custom_grid_step.setDecimals(4)
+        self.spn_custom_grid_step.setSingleStep(0.05)
+        self.spn_custom_grid_step.setValue(0.1524)
+        self.spn_custom_grid_step.setSuffix(" m")
+        self.spn_custom_grid_step.setEnabled(False)
+        self.spn_custom_grid_step.valueChanged.connect(self._update_depth_grid_preview)
+        grid_row.addWidget(self.spn_custom_grid_step)
+
+        self.btn_preview_grid = QPushButton("Calcular Grilla")
+        self.btn_preview_grid.clicked.connect(self._update_depth_grid_preview)
+        grid_row.addWidget(self.btn_preview_grid)
+        pre_layout.addLayout(grid_row)
+
+        out_pre_row = QHBoxLayout()
+        self.lbl_grid_preview = QLabel("Grilla: Por pozo (paso nativo más chico de cada pozo, sin extrapolar).")
+        self.lbl_grid_preview.setStyleSheet("color: #334155; font-size: 8.5pt;")
+        out_pre_row.addWidget(self.lbl_grid_preview, 1)
+
+        out_pre_row.addWidget(QLabel("Exportar en:"))
+        self.txt_export_output_dir = QLineEdit(str(self.output_dir))
+        self.txt_export_output_dir.setMinimumWidth(260)
+        self.txt_export_output_dir.editingFinished.connect(
+            lambda: self.set_output_dir(Path(self.txt_export_output_dir.text().strip() or str(PROJECT_ROOT / "output")))
+        )
+        btn_export_out_browse = QPushButton("Elegir Carpeta...")
+        btn_export_out_browse.clicked.connect(self._browse_output_dir)
+        out_pre_row.addWidget(self.txt_export_output_dir)
+        out_pre_row.addWidget(btn_export_out_browse)
+        pre_layout.addLayout(out_pre_row)
+
+        layout.addWidget(grp_pre_export)
 
         main_split = QSplitter(Qt.Orientation.Vertical)
 
@@ -1189,6 +1269,18 @@ class WellCuratorMainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(12, 12, 12, 12)
 
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(QLabel("Carpeta output/ seleccionada:"))
+        self.txt_tab5_output_dir = QLineEdit(str(self.output_dir))
+        self.txt_tab5_output_dir.editingFinished.connect(
+            lambda: self.set_output_dir(Path(self.txt_tab5_output_dir.text().strip() or str(PROJECT_ROOT / "output")))
+        )
+        btn_pick_tab5_out = QPushButton("Seleccionar Carpeta output/...")
+        btn_pick_tab5_out.clicked.connect(self._browse_output_dir)
+        dir_row.addWidget(self.txt_tab5_output_dir, 1)
+        dir_row.addWidget(btn_pick_tab5_out)
+        layout.addLayout(dir_row)
+
         top_row = QHBoxLayout()
         self.lbl_output_summary = QLabel("Sin inventario cargado.")
         self.lbl_output_summary.setStyleSheet("font-weight: bold;")
@@ -1278,6 +1370,11 @@ class WellCuratorMainWindow(QMainWindow):
         self.txt_out_errors.clear()
         self.lbl_output_summary.setText("Proyecto nuevo vacío (sin exportaciones aún en esta sesión).")
 
+        self.cmb_grid_mode.setCurrentIndex(0)
+        self.cmb_grid_step_preset.setCurrentIndex(0)
+        self.spn_custom_grid_step.setEnabled(False)
+        self._update_depth_grid_preview()
+
         self._on_config_changed()
 
     def _new_project_clicked(self) -> None:
@@ -1326,6 +1423,8 @@ class WellCuratorMainWindow(QMainWindow):
             "field_profile": self.cmb_field_profile.currentText() or "generic",
             "forced_epsg": self._selected_forced_epsg(),
             "repeat_strategy": self.cmb_repeat_strategy.currentData() or "keep_all",
+            "grid_mode": self.cmb_grid_mode.currentData() or "per_well",
+            "target_grid_step": self._selected_target_grid_step(),
             "incremental": self.chk_incremental.isChecked(),
             "use_cache": self.chk_use_cache.isChecked(),
             "include_input": self.chk_include_input.isChecked(),
@@ -1367,9 +1466,7 @@ class WellCuratorMainWindow(QMainWindow):
 
         out_str = str(data.get("output_dir") or "")
         if out_str:
-            self.output_dir = Path(out_str)
-            self.txt_output_dir.setText(out_str)
-            self.badge_output.setText(f"Salida: {self.output_dir.name}/")
+            self.set_output_dir(Path(out_str), refresh_ui=False)
 
         prof_name = str(data.get("field_profile") or "generic")
         if self.cmb_field_profile.findText(prof_name) >= 0:
@@ -1378,6 +1475,28 @@ class WellCuratorMainWindow(QMainWindow):
 
         rep_s = str(data.get("repeat_strategy") or "keep_all")
         self.cmb_repeat_strategy.setCurrentIndex(0 if rep_s == "keep_all" else 1)
+
+        g_mode = str(data.get("grid_mode") or "per_well")
+        g_idx = self.cmb_grid_mode.findData(g_mode)
+        self.cmb_grid_mode.setCurrentIndex(g_idx if g_idx >= 0 else 0)
+        g_step = data.get("target_grid_step")
+        if g_step is None:
+            self.cmb_grid_step_preset.setCurrentIndex(0)
+        else:
+            step_f = float(g_step)
+            matched_idx = -1
+            for i in range(self.cmb_grid_step_preset.count()):
+                val = self.cmb_grid_step_preset.itemData(i)
+                if isinstance(val, (int, float)) and abs(float(val) - step_f) < 1e-4:
+                    matched_idx = i
+                    break
+            if matched_idx >= 0:
+                self.cmb_grid_step_preset.setCurrentIndex(matched_idx)
+            else:
+                cust_idx = self.cmb_grid_step_preset.findData("custom")
+                self.cmb_grid_step_preset.setCurrentIndex(cust_idx if cust_idx >= 0 else 0)
+                self.spn_custom_grid_step.setValue(step_f)
+
         self.chk_incremental.setChecked(bool(data.get("incremental", False)))
         self.chk_use_cache.setChecked(bool(data.get("use_cache", False)))
 
@@ -1587,13 +1706,89 @@ class WellCuratorMainWindow(QMainWindow):
             ]
             self._refresh_discovered_wells()
 
+    def set_output_dir(self, target_dir: Path, refresh_ui: bool = True) -> None:
+        """Sincroniza la carpeta de salida en Pestañas 2, 3 y 5, el badge superior y las vistas."""
+        self.output_dir = Path(target_dir)
+        path_txt = str(self.output_dir)
+        for widget_name in ("txt_output_dir", "txt_export_output_dir", "txt_tab5_output_dir"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None and widget.text() != path_txt:
+                widget.blockSignals(True)
+                widget.setText(path_txt)
+                widget.blockSignals(False)
+        self.badge_output.setText(f"Salida: {self.output_dir.name}/")
+        if refresh_ui:
+            self._refresh_output_tab()
+            if not self.llm_wells:
+                self._refresh_all_visualizations()
+
     def _browse_output_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Seleccionar carpeta output/", str(self.output_dir))
         if folder:
-            self.output_dir = Path(folder)
-            self.txt_output_dir.setText(str(self.output_dir))
-            self.badge_output.setText(f"Salida: {self.output_dir.name}/")
-            self._refresh_output_tab()
+            self.set_output_dir(Path(folder), refresh_ui=True)
+
+    def _selected_target_grid_step(self) -> Optional[float]:
+        preset = self.cmb_grid_step_preset.currentData()
+        if preset is None:
+            return None
+        if preset == "custom":
+            return round(float(self.spn_custom_grid_step.value()), 4)
+        return round(float(preset), 4)
+
+    def get_export_depth_grid_spec(
+        self,
+    ) -> Tuple[str, Optional[float], Optional[float], Optional[float], Optional[Dict[str, float]]]:
+        """
+        Calcula `(grid_mode, target_step, target_start, target_stop, bounds_dict)`
+        para la previsualización o la exportación regularizada de todos los pozos.
+        """
+        mode = str(self.cmb_grid_mode.currentData() or "per_well")
+        desired_step = self._selected_target_grid_step()
+        if mode == "per_well":
+            return mode, None, None, None, None
+
+        source_wells = list(self.llm_wells.values()) or list(self.prescanned_wells.values())
+        if not source_wells:
+            return mode, desired_step, None, None, None
+
+        try:
+            bounds = compute_batch_depth_grid_bounds(source_wells, target_step=desired_step)
+        except ValueError:
+            return mode, desired_step, None, None, None
+
+        if mode == "common_step":
+            return mode, bounds["chosen_step"], None, None, bounds
+        return mode, bounds["chosen_step"], bounds["global_start"], bounds["global_stop"], bounds
+
+    def _on_grid_option_changed(self) -> None:
+        is_custom = self.cmb_grid_step_preset.currentData() == "custom"
+        self.spn_custom_grid_step.setEnabled(is_custom)
+        self._update_depth_grid_preview()
+
+    def _update_depth_grid_preview(self) -> None:
+        mode, t_step, t_start, t_stop, bounds = self.get_export_depth_grid_spec()
+        if mode == "per_well":
+            self.lbl_grid_preview.setText(
+                "Grilla: Por pozo (paso nativo más chico de cada pozo, sin extrapolar)."
+            )
+            return
+        if bounds is None:
+            step_txt = f"{t_step:.4g} m" if t_step else "menor automático del lote"
+            self.lbl_grid_preview.setText(
+                f"Grilla ({mode}): pendiente de pozos escaneados | Paso={step_txt}."
+            )
+            return
+        if mode == "common_step":
+            self.lbl_grid_preview.setText(
+                f"Mismo Paso Común: step={bounds['chosen_step']:.4g} m "
+                f"(rango nativo del lote: [{bounds['min_step']:.4g}, {bounds['max_step']:.4g}] m) | "
+                f"Start/Stop individual por pozo ({int(bounds['wells_with_depth'])} pozos)."
+            )
+        else:
+            self.lbl_grid_preview.setText(
+                f"Grilla Global Idéntica: [{t_start:.2f} .. {t_stop:.2f}] m | "
+                f"step={t_step:.4g} m | {int(bounds['rows']):,} filas idénticas/pozo (NaN fuera de rango)."
+            )
 
     def _refresh_discovered_wells(self) -> None:
         roots: List[Tuple[str, Path]] = []
@@ -1663,6 +1858,7 @@ class WellCuratorMainWindow(QMainWindow):
                 self.tbl_import.setItem(r_idx, 4, QTableWidgetItem(f"Error: {exc}"))
         if entries:
             self._refresh_log_well_selector()
+        self._update_depth_grid_preview()
 
     def _start_llm_extraction(self) -> None:
         entries = self._selected_well_entries()
@@ -1708,6 +1904,7 @@ class WellCuratorMainWindow(QMainWindow):
         self.lbl_progress.setText(f"Extracción completa ({len(self.llm_wells)} listos, {len(failed)} errores).")
         if self.tbl_review.rowCount() > 0:
             self.tbl_review.selectRow(0)
+        self._update_depth_grid_preview()
         self._refresh_all_visualizations()
 
     def _populate_review_table(self) -> None:
@@ -1873,7 +2070,17 @@ class WellCuratorMainWindow(QMainWindow):
         if not self.llm_wells:
             QMessageBox.warning(self, "Sin datos", "Primero ejecutá la extracción con el LLM en la Pestaña 3.")
             return
-        self.output_dir = Path(self.txt_output_dir.text().strip() or str(PROJECT_ROOT / "output"))
+        self.set_output_dir(
+            Path(self.txt_export_output_dir.text().strip() or self.txt_output_dir.text().strip() or str(PROJECT_ROOT / "output")),
+            refresh_ui=False,
+        )
+        grid_mode, t_step, t_start, t_stop, _bounds = self.get_export_depth_grid_spec()
+        if grid_mode != "per_well":
+            self.txt_console.appendPlainText(
+                f"[GRILLA] Regularizando exportación ({grid_mode}) | step={t_step}m | "
+                f"Start={t_start if t_start is not None else 'pozo'} | "
+                f"Stop={t_stop if t_stop is not None else 'pozo'}"
+            )
         self.btn_run_llm.setEnabled(False)
         self.btn_export_output.setEnabled(False)
 
@@ -1892,6 +2099,9 @@ class WellCuratorMainWindow(QMainWindow):
             output_dir=self.output_dir,
             global_repeat_strategy=self.cmb_repeat_strategy.currentData() or "keep_all",
             profile=self._active_profile(),
+            target_grid_step=t_step,
+            target_grid_start=t_start,
+            target_grid_stop=t_stop,
         )
         self._export_worker.progress_sig.connect(self._on_worker_progress)
         self._export_worker.log_sig.connect(self.txt_console.appendPlainText)
@@ -2170,12 +2380,19 @@ class WellCuratorMainWindow(QMainWindow):
         xpt_df: pd.DataFrame = inv["time_summary_df"]
 
         self.lbl_output_summary.setText(
-            f"Pozos en Excel: {len(ex_df)} | CSVs en wells/: {len(csvs)} | Estaciones Tiempo (XPT): {len(xpt_df)}"
+            f"[{self.output_dir.name}/] Pozos en Excel: {len(ex_df)} | CSVs en wells/: {len(csvs)} | Estaciones Tiempo (XPT): {len(xpt_df)}"
         )
         if not ex_df.empty:
             self._fill_table_from_df(self.tbl_out_excel, ex_df, max_rows=500)
+        else:
+            self.tbl_out_excel.setRowCount(0)
+            self.tbl_out_excel.setColumnCount(0)
+
         if not xpt_df.empty:
             self._fill_table_from_df(self.tbl_out_xpt, xpt_df, max_rows=500)
+        else:
+            self.tbl_out_xpt.setRowCount(0)
+            self.tbl_out_xpt.setColumnCount(0)
 
         self.cmb_out_csv.blockSignals(True)
         self.cmb_out_csv.clear()
@@ -2184,6 +2401,9 @@ class WellCuratorMainWindow(QMainWindow):
         self.cmb_out_csv.blockSignals(False)
         if csvs:
             self._load_selected_output_csv(csvs[0].name)
+        else:
+            self.tbl_out_csv.setRowCount(0)
+            self.tbl_out_csv.setColumnCount(0)
 
         self.txt_out_errors.setPlainText(inv["errors_text"] or "Sin errores registrados en batch_errors.log.")
 

@@ -36,7 +36,7 @@ from scripts.ui_controller import (
     stage_grouped_well_drop_items,
     stage_well_drop_items,
 )
-from scripts.well_exporter import export_well_to_output
+from scripts.well_exporter import compute_batch_depth_grid_bounds, export_well_to_output
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 INPUT_DIR = PROJECT_ROOT / "Input"
@@ -416,4 +416,205 @@ def test_rf1_pyside6_gui_headless_smoke_and_screenshots() -> None:
     assert tab4_png.exists() and tab4_png.stat().st_size > 10000
     assert tab4_map_png.exists() and tab4_map_png.stat().st_size > 10000
 
+    win.close()
+
+
+def test_rf9_cross_well_common_depth_grid_and_output_selector(tmp_path: Path) -> None:
+    """
+    RF-9:
+    1. Verifica regularización de eje de profundidad pre-exportación en modos
+       `common_step` (mismo paso, Start/Stop por pozo) y `global_grid`
+       (grilla global idéntica [Global Start, Global Stop, Step] entre múltiples pozos
+       sin extrapolación: NaN fuera del intervalo medido).
+    2. Verifica en GUI PySide6 la sincronización del selector de carpeta `output/`
+       entre Pestañas 2, 3 y 5, la previsualización de grilla y persistencia en proyecto.
+    3. Genera gráfico comparativo `rf9_global_depth_grid_alignment.png` y captura Tab 5.
+    """
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    profile = load_field_profile("golfo_san_jorge_faja2")
+
+    well_names = ["YPF.SC.CVa-19", "YPF.SC.CVa-25", "YPF.SC.CVa-38"]
+    loaded_items = []
+    for wn in well_names:
+        wdir = INPUT_DIR / wn
+        assert wdir.exists(), f"Falta pozo real de prueba en Input/: {wn}"
+        res, dfs = explore_well_directory(wdir, target_depth_unit="M")
+        res.llm_metadata = {
+            "nombre_pozo": wn,
+            "uwi": f"AR010000{wn[-2:]}00",
+            "coord_x": 2481000.0 + int(wn[-2:]) * 10,
+            "coord_y": 4834000.0 + int(wn[-2:]) * 10,
+            "cota": 250.0,
+            "crs_used": "EPSG:5344",
+        }
+        loaded_items.append((res, dfs))
+
+    bounds = compute_batch_depth_grid_bounds(loaded_items, target_step=None)
+    assert bounds["min_step"] == pytest.approx(0.0762, abs=1e-4)
+    assert bounds["max_step"] >= 0.15
+    assert bounds["chosen_step"] == pytest.approx(0.0762, abs=1e-4)
+    assert bounds["global_stop"] > bounds["global_start"]
+    assert bounds["rows"] > 1000
+
+    # A) Modo common_step (ej. 0.50 m conservando rango Start/Stop propio de cada pozo)
+    out_common = tmp_path / "out_common_step"
+    common_summaries = [
+        export_well_to_output(
+            well=res,
+            well_dfs=dfs,
+            output_dir=out_common,
+            field_profile=profile,
+            manual_override=True,
+            target_grid_step=0.5,
+        )
+        for res, dfs in loaded_items
+    ]
+    for ws in common_summaries:
+        assert ws.grid_step == pytest.approx(0.5, abs=1e-4)
+        df_csv = pd.read_csv(ws.depth_csv_path)
+        diffs = np.diff(df_csv["DEPTH"].to_numpy(dtype=float))
+        assert np.allclose(diffs, 0.5, atol=1e-4)
+
+    # B) Modo global_grid: todos los pozos comparten exactamente el mismo eje DEPTH (step=0.1524 m)
+    global_bounds = compute_batch_depth_grid_bounds(loaded_items, target_step=0.1524)
+    out_global = tmp_path / "out_global_grid"
+    global_summaries = [
+        export_well_to_output(
+            well=res,
+            well_dfs=dfs,
+            output_dir=out_global,
+            field_profile=profile,
+            manual_override=True,
+            target_grid_step=global_bounds["chosen_step"],
+            target_grid_start=global_bounds["global_start"],
+            target_grid_stop=global_bounds["global_stop"],
+        )
+        for res, dfs in loaded_items
+    ]
+
+    csv_dfs = [pd.read_csv(ws.depth_csv_path) for ws in global_summaries]
+    base_depth = csv_dfs[0]["DEPTH"].to_numpy(dtype=float)
+    assert len(base_depth) == int(global_bounds["rows"])
+    for ws, df_w in zip(global_summaries, csv_dfs):
+        assert ws.grid_start == pytest.approx(global_bounds["global_start"], abs=1e-4)
+        assert ws.grid_stop == pytest.approx(global_bounds["global_stop"], abs=1e-4)
+        assert ws.grid_step == pytest.approx(0.1524, abs=1e-4)
+        assert np.array_equal(df_w["DEPTH"].to_numpy(dtype=float), base_depth)
+
+    # Verificar que un pozo más corto tenga NaN fuera de su rango real (cero extrapolación)
+    fixed_cols = {"DEPTH", "nombre_pozo", "UWI", "XWELL", "YWELL", "COTA"}
+    picked_curves = []
+    first_curve_valid = []
+    for res, df_w in zip(loaded_items, csv_dfs):
+        cand_cols = [c for c in df_w.columns if c not in fixed_cols and df_w[c].notna().any()]
+        gr_like = [c for c in cand_cols if c.upper().startswith("GR") or c.upper().startswith("SP")]
+        chosen_col = gr_like[0] if gr_like else cand_cols[0]
+        picked_curves.append(chosen_col)
+        valid_d = df_w.loc[df_w[chosen_col].notna(), "DEPTH"]
+        first_curve_valid.append((float(valid_d.min()), float(valid_d.max())))
+    assert len(first_curve_valid) == len(well_names)
+    assert any(mn > global_bounds["global_start"] + 1.0 or mx < global_bounds["global_stop"] - 1.0 for mn, mx in first_curve_valid)
+
+    # Gráfico de verificación visual en images/
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5.5), dpi=130)
+    colors = ["#2563EB", "#16A34A", "#DC2626"]
+    for idx, (wn, df_w, curve) in enumerate(zip(well_names, csv_dfs, picked_curves)):
+        d_col = df_w["DEPTH"].to_numpy(dtype=float)
+        y_col = df_w[curve].to_numpy(dtype=float)
+        ax1.plot(y_col, d_col, lw=0.9, alpha=0.85, color=colors[idx], label=f"{wn} ({curve})")
+        valid_mask = ~np.isnan(y_col)
+        ax2.fill_betweenx(d_col, idx - 0.35, idx + 0.35, where=valid_mask, color=colors[idx], alpha=0.75)
+
+    ax1.invert_yaxis()
+    ax1.set_title("Curvas alineadas sobre Grilla Global Idéntica (step=0.1524 m)", fontweight="bold")
+    ax1.set_xlabel("Valor curva (GR / SP)")
+    ax1.set_ylabel("DEPTH común [m]")
+    ax1.grid(True, linestyle=":")
+    ax1.legend(fontsize=8)
+
+    ax2.invert_yaxis()
+    ax2.set_xticks(range(len(well_names)))
+    ax2.set_xticklabels(well_names, rotation=15, fontsize=8)
+    ax2.set_title(f"Cobertura real vs NaN ({len(base_depth):,} filas idénticas/pozo)", fontweight="bold")
+    ax2.set_ylabel("DEPTH común [m]")
+    ax2.grid(True, axis="y", linestyle=":")
+    fig.tight_layout()
+    plot_png = IMAGES_DIR / "rf9_global_depth_grid_alignment.png"
+    fig.savefig(plot_png)
+    plt.close(fig)
+    assert plot_png.exists() and plot_png.stat().st_size > 10000
+
+    # C) GUI PySide6: selector sincronizado de output/ en Tabs 2, 3, 5 + preview de grilla + persistencia
+    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtWidgets import QApplication
+    from scripts.app_gui import APP_STYLESHEET, WellCuratorMainWindow
+
+    app = QApplication.instance() or QApplication([])
+    for font_file in ("segoeui.ttf", "segoeuib.ttf", "consola.ttf"):
+        fp = Path("C:/Windows/Fonts") / font_file
+        if fp.exists():
+            QFontDatabase.addApplicationFont(str(fp))
+    app.setFont(QFont("Segoe UI", 9))
+    app.setStyle("Fusion")
+    app.setStyleSheet(APP_STYLESHEET)
+
+    win = WellCuratorMainWindow(initial_output_dir=out_global)
+    win.show()
+    app.processEvents()
+
+    # Sincronización entre Tab 2, Tab 3, Tab 5 y badge superior
+    assert Path(win.txt_output_dir.text()) == out_global
+    assert Path(win.txt_export_output_dir.text()) == out_global
+    assert Path(win.txt_tab5_output_dir.text()) == out_global
+    # Seleccionar explícitamente la carpeta de salida carga el inventario en Tab 5
+    win.set_output_dir(out_global)
+    assert win.tbl_out_excel.rowCount() == len(well_names)
+
+    # Cambiar a una carpeta vacía limpia tablas de Tab 5 y luego volver a out_global
+    empty_out = tmp_path / "out_empty"
+    empty_out.mkdir()
+    win.set_output_dir(empty_out)
+    assert win.tbl_out_excel.rowCount() == 0
+    assert Path(win.txt_export_output_dir.text()) == empty_out
+
+    win.set_output_dir(out_global)
+    assert win.tbl_out_excel.rowCount() == len(well_names)
+
+    # Cargar pozos en memoria y verificar preview global_grid en Tab 3
+    for wn, (res, dfs) in zip(well_names, loaded_items):
+        win.prescanned_wells[wn] = (res, dfs)
+        win.llm_wells[wn] = (res, dfs)
+    idx_global = win.cmb_grid_mode.findData("global_grid")
+    idx_step = win.cmb_grid_step_preset.findData(0.1524)
+    assert idx_global >= 0 and idx_step >= 0
+    win.cmb_grid_mode.setCurrentIndex(idx_global)
+    win.cmb_grid_step_preset.setCurrentIndex(idx_step)
+    win._update_depth_grid_preview()
+    assert "Grilla Global Idéntica" in win.lbl_grid_preview.text()
+    assert "0.1524" in win.lbl_grid_preview.text()
+
+    g_mode, t_step, t_start, t_stop, _b = win.get_export_depth_grid_spec()
+    assert g_mode == "global_grid"
+    assert t_step == pytest.approx(0.1524, abs=1e-4)
+    assert t_start == pytest.approx(global_bounds["global_start"], abs=1e-4)
+    assert t_stop == pytest.approx(global_bounds["global_stop"], abs=1e-4)
+
+    # Guardar y recargar proyecto conserva modo de grilla, paso y carpeta de salida
+    proj_path = tmp_path / "rf9_project.wellcurator.json"
+    win.save_project_to_path(proj_path)
+    win._init_empty_project()
+    assert win.cmb_grid_mode.currentData() == "per_well"
+    win.load_project_from_path(proj_path)
+    assert win.cmb_grid_mode.currentData() == "global_grid"
+    assert win._selected_target_grid_step() == pytest.approx(0.1524, abs=1e-4)
+    assert Path(win.txt_tab5_output_dir.text()) == out_global
+
+    win.tabs.setCurrentIndex(4)  # Pestaña 5. Salidas (output/)
+    app.processEvents()
+    tab5_png = IMAGES_DIR / "gui_tab5_output_selector.png"
+    win.grab().save(str(tab5_png))
+    assert tab5_png.exists() and tab5_png.stat().st_size > 10000
     win.close()

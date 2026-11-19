@@ -11,7 +11,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import openpyxl
@@ -75,17 +75,79 @@ def compute_effective_step(summary: LasFileSummary, df: pd.DataFrame) -> float:
     return 0.1524
 
 
+def compute_batch_depth_grid_bounds(
+    wells_items: Sequence[Tuple[WellExplorationResult, Dict[str, pd.DataFrame]]],
+    target_step: Optional[float] = None,
+) -> Dict[str, float]:
+    """
+    Calcula los límites globales de profundidad (`global_start`, `global_stop`, `min_step`,
+    `max_step`, `chosen_step`, `rows`) a partir de un lote de pozos cargados en memoria,
+    para poder regularizar todos los pozos sobre una grilla común sin extrapolar.
+    """
+    min_depths: List[float] = []
+    max_depths: List[float] = []
+    eff_steps: List[float] = []
+    wells_with_depth = 0
+
+    for well, well_dfs in wells_items:
+        depth_summaries = [s for s in well.las_summaries if s.index_type == "DEPTH" and s.file_name in well_dfs]
+        if not depth_summaries:
+            continue
+        well_has_data = False
+        for s in depth_summaries:
+            raw_df = well_dfs[s.file_name]
+            if raw_df is None or raw_df.empty:
+                continue
+            idx_col = raw_df.columns[0]
+            valid_idx = raw_df[idx_col].dropna().sort_values()
+            if valid_idx.empty:
+                continue
+            well_has_data = True
+            min_depths.append(float(valid_idx.iloc[0]))
+            max_depths.append(float(valid_idx.iloc[-1]))
+            eff_steps.append(compute_effective_step(s, raw_df))
+        if well_has_data:
+            wells_with_depth += 1
+
+    if not min_depths or not eff_steps:
+        raise ValueError("Ninguno de los pozos del lote contiene datos válidos indexados en profundidad.")
+
+    global_start = round(min(min_depths), 4)
+    raw_global_stop = round(max(max_depths), 4)
+    min_step = round(min(eff_steps), 4)
+    max_step = round(max(eff_steps), 4)
+    chosen_step = round(float(target_step), 4) if (target_step is not None and target_step > 0) else min_step
+
+    num_steps = max(0, int(round((raw_global_stop - global_start) / chosen_step)))
+    aligned_stop = round(global_start + num_steps * chosen_step, 4)
+    return {
+        "global_start": global_start,
+        "global_stop": aligned_stop,
+        "raw_global_stop": raw_global_stop,
+        "min_step": min_step,
+        "max_step": max_step,
+        "chosen_step": chosen_step,
+        "rows": num_steps + 1,
+        "wells_with_depth": wells_with_depth,
+    }
+
+
 def build_unified_well_depth_df(
     well: WellExplorationResult,
     well_dfs: Dict[str, pd.DataFrame],
     normalized_meta: Dict[str, object],
     repeat_strategy: Literal["keep_all", "merge"] = "keep_all",
     per_curve_repeat_strategy: Optional[Dict[str, Literal["keep_all", "merge"]]] = None,
+    target_grid_step: Optional[float] = None,
+    target_grid_start: Optional[float] = None,
+    target_grid_stop: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, float, float, float, List[str]]:
     """
-    Construye el DataFrame unificado en profundidad para un pozo usando el paso más chico
-    entre todos sus archivos .LAS de profundidad (Spec 002 - RF-2, RF-3, RF-4).
-    Soporta `per_curve_repeat_strategy` para decidir por curva repetida (`keep_all` vs `merge`).
+    Construye el DataFrame unificado en profundidad para un pozo.
+    - Por defecto (`target_grid_* is None`) usa el paso más chico propio del pozo (`Spec 002`).
+    - Si se provee `target_grid_step` (y opcionalmente `target_grid_start` / `target_grid_stop`),
+      interpola linealmente las curvas sobre esa grilla común sin extrapolar fuera del
+      rango medido de cada curva (Spec 004 - RF-9).
 
     Retorna:
       (unified_df, grid_start, grid_stop, grid_step, exported_curve_names)
@@ -115,12 +177,31 @@ def build_unified_well_depth_df(
         max_depths.append(float(d_vals[-1]))
         cleaned_dfs[s.file_name] = (d_vals, raw_df, eff_step)
 
-    grid_start = round(min(min_depths), 4)
-    grid_stop = round(max(max_depths), 4)
-    grid_step = round(min(effective_steps), 4)
+    if not min_depths or not effective_steps:
+        raise ValueError(f"El pozo {well.well_folder_name} no posee filas válidas en profundidad.")
 
-    num_steps = int(round((grid_stop - grid_start) / grid_step))
+    grid_start = (
+        round(float(target_grid_start), 4)
+        if target_grid_start is not None
+        else round(min(min_depths), 4)
+    )
+    raw_stop = (
+        round(float(target_grid_stop), 4)
+        if target_grid_stop is not None
+        else round(max(max_depths), 4)
+    )
+    if raw_stop < grid_start:
+        raw_stop = grid_start
+
+    grid_step = (
+        round(float(target_grid_step), 4)
+        if (target_grid_step is not None and target_grid_step > 0)
+        else round(min(effective_steps), 4)
+    )
+
+    num_steps = max(0, int(round((raw_stop - grid_start) / grid_step)))
     grid_depths = np.round(grid_start + np.arange(num_steps + 1) * grid_step, 4)
+    grid_stop = round(float(grid_depths[-1]), 4) if len(grid_depths) > 0 else raw_stop
 
     well_name = str(normalized_meta["nombre_pozo"])
     uwi = str(normalized_meta.get("uwi") or "")
@@ -407,6 +488,9 @@ def export_well_to_output(
     field_profile: Optional[FieldProfile] = None,
     save_metadata_cache: bool = True,
     manual_override: bool = False,
+    target_grid_step: Optional[float] = None,
+    target_grid_start: Optional[float] = None,
+    target_grid_stop: Optional[float] = None,
 ) -> WellExportSummary:
     """
     Ejecuta el flujo completo de exportación para un pozo hacia `output/`:
@@ -443,6 +527,9 @@ def export_well_to_output(
         normalized_meta=norm_meta,
         repeat_strategy=repeat_strategy,
         per_curve_repeat_strategy=per_curve_repeat_strategy,
+        target_grid_step=target_grid_step,
+        target_grid_start=target_grid_start,
+        target_grid_stop=target_grid_stop,
     )
 
     wells_dir = output_dir / "wells"

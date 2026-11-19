@@ -3,9 +3,12 @@ Memoria del proyecto entre sesiones. Máximo ~50 líneas: resume o elimina lo qu
 
 ## Estado actual
 - **Repositorio GitHub**: `https://github.com/CostaA6/well_curator`
-  - Rama activa `feat/spec-004-gui`: **Spec 004 completa, blindada y validada** (`6/6 passed` Spec 004 + regresiones Specs 001–003 OK).
+  - Rama activa `feat/spec-004-gui`: **Spec 004 completa (T1–T8)** con **RF-9** validado (`7/7 passed` Spec 004 + regresiones Specs 001–003 OK).
 
 ## Decisiones clave (y por qué)
+- **Regularización de Grilla Común Pre-Exportación (RF-9)**:
+  - `well_exporter.py` (`compute_batch_depth_grid_bounds`, `build_unified_well_depth_df`), `run_pipeline.py` (`--grid-mode`, `--grid-step`) y Pestaña 3 soportan `per_well` (nativo), `common_step` (mismo paso elegido entre pozos) y `global_grid` (mismo `[Global Start, Global Stop, Step]` e idéntico vector `DEPTH` en todos los CSVs exportados, manteniendo `NaN` fuera del rango medido sin extrapolar).
+  - Selector de carpeta `output/` sincronizado en Pestañas 2, 3, 5, badge superior y guardado/carga `.wellcurator.json`.
 - **Aislamiento estricto por pozo (1 pozo = 1 contexto limpio)**:
   - `LocalLlamaServer` arranca con `--no-cache-prompt -sps 0.0` (KV cache limpia entre pozos) y cada llamada HTTP es stateless `[System, Pozo_N]`.
   - `_fit_header_block_to_ctx` compacta en 2 niveles preservando `~Well` y líneas críticas (`LOC/FL1/LATI/LONG/EPD`).
