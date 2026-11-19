@@ -138,15 +138,27 @@ def _validate_extracted_payload(data: Dict[str, object]) -> None:
         raise ValueError("'curvas_detectadas' debe ser una lista JSON.")
 
 
+_CRITICAL_PARAM_KEYWORDS = (
+    "LOC", "FL1", "FL2", "LATI", "LONG", "EPD", "EGL", "PDAT", "LMF", "DMF",
+    "DATUM", "ELEV", "KB", "GL", "UWI", "UWID", "API", "WELL", "X:", "Y:", "Z:",
+)
+
+
+def _is_critical_param_line(stripped_line: str) -> bool:
+    upper = stripped_line.upper()
+    return any(k in upper for k in _CRITICAL_PARAM_KEYWORDS)
+
+
 def _fit_header_block_to_ctx(
     consolidated_header_block: str,
     ctx_size: int,
     max_tokens: int,
 ) -> str:
     """
-    Si un pozo tiene muchísimos .LAS y supera el presupuesto estimado del contexto,
-    recorta secciones ~Parameter/~Other redundantes de archivos secundarios manteniendo
-    intactos todos los bloques ~Well y ~Curve para evitar HTTP 400 exceed_context_size_error.
+    Ajuste inteligente en 2 niveles si un pozo tiene muchísimos .LAS:
+    - Nivel 1: omite ~Parameter/~Other no geodésicos de archivos secundarios (>=2).
+    - Nivel 2: si aún supera `ctx_size`, omite parámetros no geodésicos también del archivo 1
+      y acorta descripciones de ~Curve conservando todos los ~Well, coordenadas/cotas y mnemónicos.
     """
     budget_tokens = max(2048, ctx_size - max_tokens - 1400)
     # Estimación conservadora (~2.8 chars/token para texto técnico denso con números)
@@ -155,11 +167,13 @@ def _fit_header_block_to_ctx(
         return consolidated_header_block
 
     logger.warning(
-        "Bloque de encabezados extenso (%d chars > %d máx. para ctx=%d); compactando ~Parameter secundarios.",
+        "Bloque de encabezados extenso (%d chars > %d máx. para ctx=%d); aplicando compactación en capas.",
         len(consolidated_header_block),
         max_chars,
         ctx_size,
     )
+
+    # Nivel 1: preservar parámetros críticos (coordenadas/cota/UWI), ~Well y ~Curve completos
     out_lines: List[str] = []
     current_section = ""
     file_idx = 0
@@ -174,15 +188,39 @@ def _fit_header_block_to_ctx(
             current_section = s[1:].lstrip().upper()[:1]
             out_lines.append(line)
             continue
-        # En archivos secundarios (>= 2), omitir líneas largas de ~Parameter / ~Other
-        if file_idx >= 2 and current_section in ("P", "O"):
+        if file_idx >= 2 and current_section in ("P", "O") and not _is_critical_param_line(s):
             continue
         out_lines.append(line)
 
     trimmed = "\n".join(out_lines)
-    if len(trimmed) > max_chars:
-        trimmed = trimmed[:max_chars] + "\n... [TRUNCADO POR LÍMITE DE CONTEXTO]\n"
-    return trimmed
+    if len(trimmed) <= max_chars:
+        return trimmed
+
+    # Nivel 2: en archivos muy extensos, conservar ~Well y líneas críticas en todos los archivos
+    # y compactar ~Curve dejando solo MNEM.UNIT
+    tier2_lines: List[str] = []
+    current_section = ""
+    for line in trimmed.splitlines():
+        s = line.strip()
+        if s.startswith("================"):
+            current_section = ""
+            tier2_lines.append(line)
+            continue
+        if s.startswith("~"):
+            current_section = s[1:].lstrip().upper()[:1]
+            tier2_lines.append(line)
+            continue
+        if current_section in ("P", "O") and not _is_critical_param_line(s):
+            continue
+        if current_section == "C" and not s.startswith("#") and ":" in s:
+            tier2_lines.append(s.split(":", 1)[0].strip())
+            continue
+        tier2_lines.append(line)
+
+    trimmed2 = "\n".join(tier2_lines)
+    if len(trimmed2) > max_chars:
+        trimmed2 = trimmed2[:max_chars] + "\n... [TRUNCADO POR LÍMITE DE CONTEXTO]\n"
+    return trimmed2
 
 
 class OpenAICompatibleLLMClient:
@@ -399,6 +437,9 @@ class LocalLlamaServer:
             str(self.config.ctx_size),
             "-np",
             "1",
+            "--no-cache-prompt",
+            "-sps",
+            "0.0",
             "--port",
             str(self.port),
             "--host",

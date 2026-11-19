@@ -73,6 +73,7 @@ class WellExplorationResult:
     repeated_depth_curves: Dict[str, List[Dict[str, object]]]
     all_assigned_depth_curves: List[str]
     llm_metadata: Optional[Dict[str, object]] = None
+    detected_wells_in_folder: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, object]:
         data = asdict(self)
@@ -183,6 +184,81 @@ def _compact_raw_header_for_llm(raw_header_text: str) -> str:
                 continue
         cleaned.append(line.rstrip())
     return "\n".join(cleaned)
+
+
+def canonical_well_key(name: str) -> str:
+    """Genera una clave alfanumérica canónica para agrupar archivos del mismo pozo (ej. 'YPF.SC.CV.a-38' -> 'YPFSCCVA38')."""
+    return re.sub(r"[^A-Z0-9]", "", str(name or "").upper())
+
+
+def clean_well_display_name(name: str) -> str:
+    """Limpia errores tipográficos comunes antes del guion (ej. 'YPF.SC.CVa.-24' -> 'YPF.SC.CVa-24')."""
+    out = re.sub(r"\s+", " ", str(name or "").strip())
+    out = re.sub(r"\.a-", "a-", out)
+    out = re.sub(r"\.-", "-", out)
+    return out
+
+
+def extract_well_identity_hint(raw_header_text: str) -> Dict[str, str]:
+    """
+    Lee rápidamente ~Well en Python puro (sin lasio) para detectar el nombre WELL y UWI
+    de un archivo .LAS individual y prevenir mezcla accidental de distintos pozos.
+    """
+    well_val = ""
+    uwi_val = ""
+    in_well = False
+
+    for line in raw_header_text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("~"):
+            in_well = s[1:].lstrip().upper().startswith("W")
+            continue
+        if not in_well or ":" not in s or "." not in s:
+            continue
+
+        left_of_colon = s.split(":", 1)[0]
+        mnem = left_of_colon.split(".", 1)[0].strip().upper()
+        after_dot = left_of_colon.split(".", 1)[1].strip()
+        # Si hay unidad pegada al punto y un espacio después, separarla (en ~Well WELL/UWI casi no llevan unidad)
+        if mnem in ("WELL", "WN") and after_dot:
+            val = after_dot.strip()
+            if mnem == "WELL" or not well_val:
+                well_val = val
+        elif mnem in ("UWI", "UWID", "API") and after_dot:
+            val = re.sub(r"\s+", "", after_dot.upper())
+            if len(val) > len(uwi_val):
+                uwi_val = val
+
+    clean_name = clean_well_display_name(well_val)
+    return {
+        "well_name": clean_name,
+        "well_key": canonical_well_key(clean_name),
+        "uwi": uwi_val,
+    }
+
+
+def group_las_files_by_well(las_paths: List[Path]) -> Dict[str, Dict[str, object]]:
+    """
+    Agrupa una lista de archivos .LAS por identidad de pozo leyendo únicamente sus encabezados
+    (sin invocar lasio ni al LLM), para evitar mezclar pozos distintos al importar archivos sueltos o ZIPs.
+    """
+    groups: Dict[str, Dict[str, object]] = {}
+    for lp in sorted(las_paths):
+        full_text, _ = read_text_with_fallback(lp)
+        raw_hdr, _ = extract_raw_header_before_ascii(full_text)
+        hint = extract_well_identity_hint(raw_hdr)
+        wkey = hint["well_key"] or canonical_well_key(lp.stem)
+        display = hint["well_name"] or lp.stem
+        if wkey not in groups:
+            groups[wkey] = {
+                "well_name": display,
+                "well_key": wkey,
+                "files": [],
+            }
+        groups[wkey]["files"].append(lp)
+    return groups
 
 
 def _safe_float(val: object, default: float = np.nan) -> float:
@@ -455,6 +531,13 @@ def explore_well_directory(
 
     consolidated_block = build_consolidated_header_block(well_dir.name, summaries)
 
+    # Detectar si por error la carpeta mezcla encabezados de múltiples pozos distintos
+    distinct_well_labels: Dict[str, str] = {}
+    for s in summaries:
+        hint = extract_well_identity_hint(s.raw_header_text)
+        if hint["well_key"] and hint["well_key"] not in distinct_well_labels:
+            distinct_well_labels[hint["well_key"]] = hint["well_name"]
+
     result = WellExplorationResult(
         well_folder_name=well_dir.name,
         well_folder_path=str(well_dir),
@@ -467,6 +550,7 @@ def explore_well_directory(
         unique_depth_curves=unique_depth_curves,
         repeated_depth_curves=repeated_depth_curves,
         all_assigned_depth_curves=all_assigned_depth_curves,
+        detected_wells_in_folder=list(distinct_well_labels.values()),
     )
     return result, dataframes
 

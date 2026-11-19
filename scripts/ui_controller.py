@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import shutil
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -26,7 +27,7 @@ from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_crs_info
 from pyproj.enums import PJType
 
-from scripts.las_explorer import WellExplorationResult
+from scripts.las_explorer import WellExplorationResult, group_las_files_by_well
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,98 @@ def stage_well_drop_items(
         raise ValueError("No se encontraron archivos .las/.LAS válidos en los elementos seleccionados.")
 
     return dest_dir, sorted(set(imported_files))
+
+
+def stage_grouped_well_drop_items(
+    paths: Sequence[Path],
+    target_well_name: str = "",
+    workspace_root: Path = WORKSPACE_IMPORTS_DIR,
+) -> List[Tuple[Path, List[str]]]:
+    """
+    Importación inteligente con aislamiento por pozo:
+    - Recolecta archivos `.las`/`.LAS` desde archivos sueltos, carpeta de pozo o `.zip` (con protección ZipSlip).
+    - Inspecciona la identidad `WELL` de cada encabezado antes de guardarlos en `workspace_imports/`:
+      * Si todos pertenecen al mismo pozo, los agrupa en una sola carpeta (`target_well_name` o detectado).
+      * Si se mezclaron archivos de múltiples pozos distintos (ej. CVa-25 y CVa-38 juntos), los separa
+        automáticamente en subcarpetas independientes por pozo para no mezclar contextos del LLM.
+    """
+    if not paths:
+        raise ValueError("No se recibieron rutas de archivos o carpetas para importar.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        collected_las: List[Path] = []
+
+        for item in paths:
+            src = Path(item)
+            if not src.exists():
+                continue
+            if src.is_dir():
+                direct_las = [c for c in sorted(src.iterdir()) if c.is_file() and c.suffix.lower() == ".las"]
+                if direct_las:
+                    collected_las.extend(direct_las)
+                else:
+                    sub_las_dirs = [
+                        d for d in sorted(src.iterdir())
+                        if d.is_dir() and any(f.is_file() and f.suffix.lower() == ".las" for f in d.iterdir())
+                    ]
+                    if len(sub_las_dirs) > 1:
+                        raise ValueError(
+                            f"La carpeta '{src.name}' contiene {len(sub_las_dirs)} subcarpetas de pozos distintos. "
+                            "Usá 'Añadir Carpeta Batch...' en el panel derecho para importarlos como lote."
+                        )
+                    for child in sorted(src.rglob("*")):
+                        if child.is_file() and child.suffix.lower() == ".las":
+                            collected_las.append(child)
+            elif src.is_file() and src.suffix.lower() == ".las":
+                collected_las.append(src)
+            elif src.is_file() and src.suffix.lower() == ".zip":
+                with zipfile.ZipFile(src, "r") as zf:
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        member_path = Path(member.filename)
+                        if member_path.is_absolute() or ".." in member_path.parts:
+                            continue
+                        if member_path.suffix.lower() != ".las":
+                            continue
+                        extracted = tmp_dir / member_path.name
+                        with zf.open(member, "r") as z_in, open(extracted, "wb") as f_out:
+                            shutil.copyfileobj(z_in, f_out)
+                        collected_las.append(extracted)
+
+        if not collected_las:
+            raise ValueError("No se encontraron archivos .las/.LAS válidos en los elementos seleccionados.")
+
+        groups = group_las_files_by_well(collected_las)
+        staged: List[Tuple[Path, List[str]]] = []
+
+        if len(groups) == 1:
+            only_group = next(iter(groups.values()))
+            folder_label = (
+                sanitize_folder_name(target_well_name)
+                if target_well_name.strip()
+                else sanitize_folder_name(str(only_group["well_name"]) or suggest_well_name_from_paths(paths))
+            )
+            dest_dir = workspace_root / folder_label
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            copied: List[str] = []
+            for fp in only_group["files"]:
+                shutil.copy2(fp, dest_dir / fp.name)
+                copied.append(fp.name)
+            staged.append((dest_dir, sorted(set(copied))))
+        else:
+            for grp in groups.values():
+                folder_label = sanitize_folder_name(str(grp["well_name"]))
+                dest_dir = workspace_root / folder_label
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                copied = []
+                for fp in grp["files"]:
+                    shutil.copy2(fp, dest_dir / fp.name)
+                    copied.append(fp.name)
+                staged.append((dest_dir, sorted(set(copied))))
+
+        return staged
 
 
 def discover_well_sources(roots: Sequence[Tuple[str, Path]]) -> List[Dict[str, object]]:

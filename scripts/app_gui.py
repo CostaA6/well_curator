@@ -95,6 +95,7 @@ from scripts.ui_controller import (
     prepare_well_log_tracks,
     save_project_file,
     search_projected_crs,
+    stage_grouped_well_drop_items,
     stage_well_drop_items,
     suggest_well_name_from_paths,
 )
@@ -1020,9 +1021,19 @@ class WellCuratorMainWindow(QMainWindow):
 
         main_split = QSplitter(Qt.Orientation.Vertical)
 
-        # Tabla editable de revisión supervisada
+        # Tabla editable de revisión supervisada + banner de alertas de integridad
         grp_rev = QGroupBox("Revisión Supervisada de Metadatos Normalizados (Doble clic para editar antes de exportar)")
         rev_layout = QVBoxLayout(grp_rev)
+
+        self.lbl_review_warning = QLabel("")
+        self.lbl_review_warning.setWordWrap(True)
+        self.lbl_review_warning.setStyleSheet(
+            "background: #FEF3C7; color: #92400E; border: 1px solid #F59E0B; "
+            "border-radius: 4px; padding: 6px; font-weight: bold;"
+        )
+        self.lbl_review_warning.setVisible(False)
+        rev_layout.addWidget(self.lbl_review_warning)
+
         self.tbl_review = QTableWidget(0, 9)
         self.tbl_review.setHorizontalHeaderLabels([
             "Carpeta", "Pozo (Editable)", "UWI (Editable)",
@@ -1503,26 +1514,34 @@ class WellCuratorMainWindow(QMainWindow):
             self.txt_model_name.setText(models[0])
 
     def _handle_dropped_paths(self, paths: List[Path]) -> None:
-        target_name = self.txt_target_well_name.text().strip() or suggest_well_name_from_paths(paths)
+        target_name = self.txt_target_well_name.text().strip()
         try:
-            dest_dir, imported = stage_well_drop_items(paths, target_name, WORKSPACE_IMPORTS_DIR)
+            staged_groups = stage_grouped_well_drop_items(paths, target_name, WORKSPACE_IMPORTS_DIR)
             self.txt_target_well_name.clear()
-            # Añadir únicamente el pozo importado al proyecto activo (sin cargar historial ajeno)
-            rp = dest_dir.resolve()
-            if not any(Path(str(w["folder_path"])).resolve() == rp for w in self.project_manual_wells):
-                self.project_manual_wells.append({
-                    "well_folder_name": dest_dir.name,
-                    "folder_path": dest_dir,
-                    "source": "Importado (Drag & Drop)",
-                    "las_count": len(imported),
-                })
+            total_files = 0
+            for dest_dir, imported in staged_groups:
+                total_files += len(imported)
+                rp = dest_dir.resolve()
+                if not any(Path(str(w["folder_path"])).resolve() == rp for w in self.project_manual_wells):
+                    self.project_manual_wells.append({
+                        "well_folder_name": dest_dir.name,
+                        "folder_path": dest_dir,
+                        "source": "Importado (Drag & Drop)",
+                        "las_count": len(imported),
+                    })
             self._refresh_discovered_wells()
             self._run_prescan()
-            QMessageBox.information(
-                self,
-                "Pozo Importado",
-                f"Se importaron {len(imported)} archivos .LAS en:\n{dest_dir}",
-            )
+
+            if len(staged_groups) == 1:
+                d0, f0 = staged_groups[0]
+                msg = f"Se importaron {len(f0)} archivos .LAS en:\n{d0}"
+            else:
+                names = ", ".join(d.name for d, _ in staged_groups)
+                msg = (
+                    f"Se detectaron {len(staged_groups)} pozos distintos en los archivos soltados.\n"
+                    f"Se separaron automáticamente para aislar sus contextos:\n{names} ({total_files} archivos .LAS)."
+                )
+            QMessageBox.information(self, "Importación Completa", msg)
         except Exception as exc:
             QMessageBox.warning(self, "Error al importar", str(exc))
 
@@ -1627,7 +1646,16 @@ class WellCuratorMainWindow(QMainWindow):
                 res, dfs = explore_well_directory(Path(entry["folder_path"]), target_depth_unit=profile.target_depth_unit)
                 self.prescanned_wells[fname] = (res, dfs)
                 units = sorted({s.original_index_unit for s in res.las_summaries if s.index_type == "DEPTH"})
-                self.tbl_import.setItem(r_idx, 4, QTableWidgetItem(f"{res.depth_files_count} DEPTH / {res.time_files_count} TIME"))
+                mixed = len(res.detected_wells_in_folder) > 1
+                depth_txt = (
+                    f"⚠ MEZCLA ({len(res.detected_wells_in_folder)} pozos: {', '.join(res.detected_wells_in_folder[:3])})"
+                    if mixed
+                    else f"{res.depth_files_count} DEPTH / {res.time_files_count} TIME"
+                )
+                it_depth = QTableWidgetItem(depth_txt)
+                if mixed:
+                    it_depth.setBackground(QColor("#FEF3C7"))
+                self.tbl_import.setItem(r_idx, 4, it_depth)
                 self.tbl_import.setItem(r_idx, 5, QTableWidgetItem(", ".join(units) or "N/A"))
                 self.tbl_import.setItem(r_idx, 6, QTableWidgetItem(str(len(res.unique_depth_curves))))
                 self.tbl_import.setItem(r_idx, 7, QTableWidgetItem(str(len(res.repeated_depth_curves))))
@@ -1708,6 +1736,64 @@ class WellCuratorMainWindow(QMainWindow):
                     it.setBackground(QColor("#F8FAFC"))
                 self.tbl_review.setItem(r_idx, c_idx, it)
         self._populating_review_table = False
+        self._highlight_review_anomalies()
+
+    def _highlight_review_anomalies(self) -> None:
+        """
+        Detecta anomalías cruzadas antes de exportar:
+        1) Carpetas que mezclaban encabezados de múltiples pozos distintos.
+        2) Dos o más filas con el mismo UWI o idénticas coordenadas (X, Y).
+        """
+        uwi_counts: Dict[str, int] = {}
+        xy_counts: Dict[Tuple[str, str], int] = {}
+        mixed_folders: List[str] = []
+
+        for r in range(self.tbl_review.rowCount()):
+            fname = self.tbl_review.item(r, 0).text().strip() if self.tbl_review.item(r, 0) else ""
+            uwi = self.tbl_review.item(r, 2).text().strip().upper() if self.tbl_review.item(r, 2) else ""
+            x_s = self.tbl_review.item(r, 3).text().strip() if self.tbl_review.item(r, 3) else ""
+            y_s = self.tbl_review.item(r, 4).text().strip() if self.tbl_review.item(r, 4) else ""
+            if uwi:
+                uwi_counts[uwi] = uwi_counts.get(uwi, 0) + 1
+            if x_s and y_s:
+                xy_counts[(x_s, y_s)] = xy_counts.get((x_s, y_s), 0) + 1
+            if fname in self.llm_wells and len(self.llm_wells[fname][0].detected_wells_in_folder) > 1:
+                mixed_folders.append(fname)
+
+        dup_uwis = {k for k, v in uwi_counts.items() if v > 1}
+        dup_xys = {k for k, v in xy_counts.items() if v > 1}
+
+        for r in range(self.tbl_review.rowCount()):
+            fname = self.tbl_review.item(r, 0).text().strip() if self.tbl_review.item(r, 0) else ""
+            uwi_it = self.tbl_review.item(r, 2)
+            x_it = self.tbl_review.item(r, 3)
+            y_it = self.tbl_review.item(r, 4)
+            is_mixed = fname in mixed_folders
+            is_dup_uwi = bool(uwi_it and uwi_it.text().strip().upper() in dup_uwis)
+            is_dup_xy = bool(x_it and y_it and (x_it.text().strip(), y_it.text().strip()) in dup_xys)
+
+            if self.tbl_review.item(r, 0):
+                self.tbl_review.item(r, 0).setBackground(QColor("#FEF3C7" if is_mixed else "#F8FAFC"))
+            if uwi_it:
+                uwi_it.setBackground(QColor("#FEE2E2" if is_dup_uwi else "#FFFFFF"))
+            if x_it and y_it:
+                bg = QColor("#FEE2E2" if is_dup_xy else "#FFFFFF")
+                x_it.setBackground(bg)
+                y_it.setBackground(bg)
+
+        warnings: List[str] = []
+        if mixed_folders:
+            warnings.append(f"Carpetas con archivos de múltiples pozos mezclados: {', '.join(mixed_folders)}")
+        if dup_uwis:
+            warnings.append(f"UWI repetido entre filas: {', '.join(sorted(dup_uwis))}")
+        if dup_xys:
+            warnings.append("Coordenadas (X, Y) idénticas detectadas entre pozos distintos")
+
+        if warnings:
+            self.lbl_review_warning.setText("⚠ Alerta de Integridad: " + " | ".join(warnings))
+            self.lbl_review_warning.setVisible(True)
+        else:
+            self.lbl_review_warning.setVisible(False)
 
     def _on_review_cell_edited(self, item: QTableWidgetItem) -> None:
         if self._populating_review_table:
@@ -1736,6 +1822,7 @@ class WellCuratorMainWindow(QMainWindow):
             elif col == 5:
                 meta["cota"] = round(float(val), 2)
             self.manual_edited_wells.add(fname)
+            self._highlight_review_anomalies()
         except ValueError:
             pass
 

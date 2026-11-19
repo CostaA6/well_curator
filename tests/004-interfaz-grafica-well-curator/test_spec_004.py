@@ -33,6 +33,7 @@ from scripts.ui_controller import (
     load_output_inventory,
     prepare_well_log_tracks,
     search_projected_crs,
+    stage_grouped_well_drop_items,
     stage_well_drop_items,
 )
 from scripts.well_exporter import export_well_to_output
@@ -80,16 +81,36 @@ def test_rf2_staging_drag_and_drop_files_zip_and_folder(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="subcarpetas de pozos distintos"):
         stage_well_drop_items([INPUT_DIR], target_well_name="LOTE_ENTERO", workspace_root=ws_root)
 
-    # 5. Protección de presupuesto de contexto para pozos con muchos .LAS
+    # 5. Protección de presupuesto de contexto en 2 niveles conservando ~Well y líneas críticas
     huge_block = (
         "================ ARCHIVO: run1.las ================\n~Well\nWELL. TEST : Well\n~Curve\nGR.GAPI : GR\n"
         + "================ ARCHIVO: run2.las ================\n~Well\nWELL. TEST : Well\n~Parameter\n"
+        + "FL1 . Y: 2.482.048,96 : Field Location 1\n"
         + "\n".join([f"PAR{i}.  {i}.0 : Parametro largo de calibracion {i}" for i in range(1500)])
         + "\n~Curve\nDT.US/F : Sonic\n"
     )
     fitted = _fit_header_block_to_ctx(huge_block, ctx_size=8192, max_tokens=2048)
     assert len(fitted) < len(huge_block)
-    assert "~Well" in fitted and "DT.US/F" in fitted
+    assert "~Well" in fitted and "DT.US/F" in fitted and "2.482.048,96" in fitted
+
+    # 6. Auto-separación inteligente cuando se sueltan archivos mezclados de CVa-25 + CVa-38
+    mixed_ws = tmp_path / "mixed_ws"
+    cva25_files = sorted((INPUT_DIR / "YPF.SC.CVa-25").glob("*.las"))
+    cva38_files = sorted((INPUT_DIR / "YPF.SC.CVa-38").glob("*.las"))
+    staged_groups = stage_grouped_well_drop_items(cva25_files + cva38_files, workspace_root=mixed_ws)
+    assert len(staged_groups) == 2
+    by_folder = {d.name: files for d, files in staged_groups}
+    assert "YPF.SC.CVa-25" in by_folder and len(by_folder["YPF.SC.CVa-25"]) == 1
+    assert "YPF.SC.CVa-38" in by_folder and len(by_folder["YPF.SC.CVa-38"]) == 3
+
+    # Verificar detección si una carpeta en disco ya venía mezclada
+    bad_dir = tmp_path / "CARPETA_MEZCLADA"
+    bad_dir.mkdir()
+    import shutil as _sh
+    for f in cva25_files + cva38_files[:1]:
+        _sh.copy2(f, bad_dir / f.name)
+    bad_res, _ = explore_well_directory(bad_dir)
+    assert len(bad_res.detected_wells_in_folder) == 2
 
     discovered = discover_well_sources([("workspace_imports/", ws_root)])
     names = {d["well_folder_name"] for d in discovered}
@@ -349,6 +370,20 @@ def test_rf1_pyside6_gui_headless_smoke_and_screenshots() -> None:
             win.per_curve_overrides.setdefault(fname, {})
 
     win._populate_review_table()
+
+    # Verificar alerta visual cuando dos pozos comparten UWI o coordenadas idénticas
+    win.tabs.setCurrentIndex(2)
+    app.processEvents()
+    if win.tbl_review.rowCount() >= 2:
+        dup_uwi = win.tbl_review.item(0, 2).text()
+        orig_uwi_row1 = win.tbl_review.item(1, 2).text()
+        win.tbl_review.item(1, 2).setText(dup_uwi)
+        win._highlight_review_anomalies()
+        assert not win.lbl_review_warning.isHidden()
+        assert "UWI repetido" in win.lbl_review_warning.text()
+        win.tbl_review.item(1, 2).setText(orig_uwi_row1)
+        win._populate_review_table()
+
     if win.tbl_review.rowCount() > 0:
         win.tbl_review.selectRow(0)
     win._refresh_all_visualizations()
