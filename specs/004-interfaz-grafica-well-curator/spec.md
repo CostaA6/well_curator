@@ -117,6 +117,14 @@ Replicar y hacer interactivas dentro de la app todas las validaciones visuales d
     - Gráfico dual: panel izquierdo con perfil completo Crudo vs Homogeneizado (marcando zonas `NaN` fuera de rango medido sin extrapolación) y panel derecho con **zoom de alta resolución** mostrando muestras crudas individuales (`o`) frente a nodos interpolados en la grilla común (`+` / línea discontinua y grilla horizontal al `step` objetivo) junto a métricas cuantitativas (cantidad de muestras crudas vs grilla, % válidos, diferencia media en puntos coincidentes).
   - Incluye allí mismo la configuración de modo/paso de grilla, selector de carpeta `output/` y botón **Confirmar y Exportar a output/**.
 
+### RF-11 — Trazabilidad Dual (`Paso Original` y `Paso Nuevo`) + Aislamiento de Salida por Sesión (`Matriz Maestra` y `well_metadata.xlsx`)
+- **Doble columna de paso en tablas y Excel maestro (`well_exporter.py` y `app_gui.py`)**:
+  - `well_metadata.xlsx` (`FIXED_EXCEL_COLS`) incorpora **`Original Step`** (paso efectivo nativo mínimo propio del pozo antes de homogeneizar) y **`New Step`** (paso final exportado tras interpolar/regularizar).
+  - Las tablas de revisión (**Pestaña 3** `tbl_review`) y procedencia (**Pestaña 4** `tbl_grid_provenance`) exponen ambas columnas: **`Paso Orig. [m]`** y **`Paso Nuevo [m]`** actualizadas en tiempo real según el modo/paso configurado.
+- **Limpieza automática al exportar en modo no incremental + Matriz Excel filtrada**:
+  - Cuando **Modo Incremental** está desactivado al confirmar exportación en la GUI, se limpian los artefactos previos propios de Well Curator (`clean_output_artifacts`: `well_metadata.xlsx`, `wells/`, `time_logs/`, `metadata_cache/`, reportes) en la carpeta de salida elegida para evitar que corridas anteriores se mezclen con la sesión actual.
+  - Además, el gráfico **Matriz Maestra Excel (yes/no)** en Pestaña 5 excluye las columnas fijas actualizadas (`FIXED_EXCEL_COLS`) y muestra únicamente los pozos exportados de la sesión activa (salvo Modo Incremental o inspección explícita en Pestaña 6).
+
 ---
 
 ## 3. Requerimientos No Funcionales (RNF)

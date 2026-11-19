@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
@@ -23,7 +24,7 @@ from scripts.las_explorer import LasFileSummary, WellExplorationResult
 
 logger = logging.getLogger(__name__)
 
-FIXED_EXCEL_COLS = ["File", "Well", "UWI", "Start", "Stop", "Step", "X", "Y", "Elevation"]
+FIXED_EXCEL_COLS = ["File", "Well", "UWI", "Start", "Stop", "Original Step", "New Step", "X", "Y", "Elevation"]
 FIXED_CSV_COLS = ["DEPTH", "nombre_pozo", "UWI", "XWELL", "YWELL", "COTA"]
 
 
@@ -44,6 +45,28 @@ class WellExportSummary:
     time_csv_paths: List[Path] = field(default_factory=list)
     crs_used: str = ""
     coord_resolution_note: str = ""
+    original_grid_step: Optional[float] = None
+
+
+def clean_output_artifacts(output_dir: Path) -> None:
+    """
+    Limpia de `output_dir` únicamente los artefactos generados por Well Curator
+    (`wells/`, `time_logs/`, `metadata_cache/`, `well_metadata.xlsx`, reportes y mapa HTML)
+    antes de una exportación no incremental, preservando cualquier archivo ajeno en esa ruta.
+    """
+    if not output_dir.exists():
+        return
+    for sub in ("wells", "time_logs", "metadata_cache"):
+        p = output_dir / sub
+        if p.exists() and p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+    for fname in ("well_metadata.xlsx", "batch_run_report.json", "batch_errors.log", "_well_map_preview.html"):
+        fp = output_dir / fname
+        if fp.exists() and fp.is_file():
+            try:
+                fp.unlink()
+            except Exception:
+                pass
 
 
 def describe_effective_step_source(summary: LasFileSummary, df: pd.DataFrame) -> Tuple[float, str]:
@@ -628,11 +651,18 @@ def update_master_excel(
 
     if excel_path.exists():
         old_df = pd.read_excel(excel_path)
-        old_curve_cols = [c for c in old_df.columns if c not in FIXED_EXCEL_COLS]
+        fixed_legacy = set(FIXED_EXCEL_COLS) | {"Step"}
+        old_curve_cols = [c for c in old_df.columns if c not in fixed_legacy]
         all_curves_set.update(old_curve_cols)
         for _, row in old_df.iterrows():
             wname = str(row["Well"])
-            existing_rows[wname] = row.to_dict()
+            row_d = row.to_dict()
+            if "Step" in row_d:
+                if "New Step" not in row_d or pd.isna(row_d.get("New Step")):
+                    row_d["New Step"] = row_d["Step"]
+                if "Original Step" not in row_d or pd.isna(row_d.get("Original Step")):
+                    row_d["Original Step"] = row_d["Step"]
+            existing_rows[wname] = row_d
 
     for ws in well_Summaries:
         all_curves_set.update(ws.exported_depth_curves)
@@ -641,13 +671,15 @@ def update_master_excel(
 
     for ws in well_Summaries:
         present_set = set(ws.exported_depth_curves)
+        orig_step_val = ws.original_grid_step if ws.original_grid_step is not None else ws.grid_step
         row_dict: Dict[str, object] = {
             "File": ws.depth_csv_path.stem,
             "Well": ws.well_name,
             "UWI": ws.uwi,
             "Start": ws.grid_start,
             "Stop": ws.grid_stop,
-            "Step": ws.grid_step,
+            "Original Step": orig_step_val,
+            "New Step": ws.grid_step,
             "X": ws.coord_x,
             "Y": ws.coord_y,
             "Elevation": ws.elevation,
@@ -771,6 +803,13 @@ def export_well_to_output(
     if station_rows:
         update_time_stations_summary(station_rows, output_dir)
 
+    native_steps = [
+        compute_effective_step(s, well_dfs[s.file_name])
+        for s in well.las_summaries
+        if s.index_type == "DEPTH" and s.file_name in well_dfs
+    ]
+    original_grid_step = round(min(native_steps), 4) if native_steps else grid_step
+
     if save_metadata_cache:
         cache_dir = output_dir / "metadata_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -781,6 +820,7 @@ def export_well_to_output(
             "metadata": norm_meta,
             "grid_start": grid_start,
             "grid_stop": grid_stop,
+            "original_grid_step": original_grid_step,
             "grid_step": grid_step,
             "depth_csv": str(depth_csv_path.name),
         }
@@ -801,6 +841,7 @@ def export_well_to_output(
         time_csv_paths=time_csv_paths,
         crs_used=crs_used,
         coord_resolution_note=coord_note,
+        original_grid_step=original_grid_step,
     )
 
     if update_excel:

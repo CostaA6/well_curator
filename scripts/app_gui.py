@@ -102,8 +102,11 @@ from scripts.ui_controller import (
     suggest_well_name_from_paths,
 )
 from scripts.well_exporter import (
+    FIXED_EXCEL_COLS,
     WellExportSummary,
+    clean_output_artifacts,
     compute_batch_depth_grid_bounds,
+    compute_effective_step,
     export_well_to_output,
     inspect_depth_grid_provenance,
     prepare_interpolation_qc_data,
@@ -665,6 +668,7 @@ class ExportWorker(QThread):
         target_grid_step: Optional[float] = None,
         target_grid_start: Optional[float] = None,
         target_grid_stop: Optional[float] = None,
+        clean_before_export: bool = True,
     ) -> None:
         super().__init__()
         self.items = items
@@ -674,8 +678,11 @@ class ExportWorker(QThread):
         self.target_grid_step = target_grid_step
         self.target_grid_start = target_grid_start
         self.target_grid_stop = target_grid_stop
+        self.clean_before_export = clean_before_export
 
     def run(self) -> None:
+        if self.clean_before_export:
+            clean_output_artifacts(self.output_dir)
         summaries: List[WellExportSummary] = []
         total = len(self.items)
         for idx, (fname, res, dfs, per_curve, manual_edit) in enumerate(self.items, start=1):
@@ -1063,14 +1070,14 @@ class WellCuratorMainWindow(QMainWindow):
         self.lbl_review_warning.setVisible(False)
         rev_layout.addWidget(self.lbl_review_warning)
 
-        self.tbl_review = QTableWidget(0, 9)
+        self.tbl_review = QTableWidget(0, 10)
         self.tbl_review.setHorizontalHeaderLabels([
             "Carpeta", "Pozo (Editable)", "UWI (Editable)",
             "X Este (Editable)", "Y Norte (Editable)", "Cota [m]",
-            "CRS", "Step [m]", "Rep."
+            "CRS", "Paso Orig. [m]", "Paso Nuevo [m]", "Rep."
         ])
         self.tbl_review.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        for col_fit in (6, 7, 8):
+        for col_fit in (6, 7, 8, 9):
             self.tbl_review.horizontalHeader().setSectionResizeMode(col_fit, QHeaderView.ResizeMode.ResizeToContents)
         self.tbl_review.itemSelectionChanged.connect(self._on_review_row_selected)
         self.tbl_review.itemChanged.connect(self._on_review_cell_edited)
@@ -1205,15 +1212,15 @@ class WellCuratorMainWindow(QMainWindow):
         )
         prov_l.addWidget(self.lbl_grid_provenance)
 
-        self.tbl_grid_provenance = QTableWidget(0, 8)
+        self.tbl_grid_provenance = QTableWidget(0, 9)
         self.tbl_grid_provenance.setHorizontalHeaderLabels([
             "Pozo", "Archivo .LAS", "Unid.", "Start [m]", "Stop [m]",
-            "STEP Hdr", "Efectivo [m]", "Origen / Cálculo del Paso"
+            "STEP Hdr", "Paso Orig. [m]", "Paso Nuevo [m]", "Origen / Cálculo del Paso"
         ])
         hdr_prov = self.tbl_grid_provenance.horizontalHeader()
         hdr_prov.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr_prov.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
-        for col_i, col_w in enumerate((95, 130, 50, 62, 62, 65, 72)):
+        hdr_prov.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
+        for col_i, col_w in enumerate((95, 130, 48, 60, 60, 62, 74, 74)):
             self.tbl_grid_provenance.setColumnWidth(col_i, col_w)
         prov_l.addWidget(self.tbl_grid_provenance, 1)
 
@@ -1990,8 +1997,19 @@ class WellCuratorMainWindow(QMainWindow):
             return
 
         file_rows = prov["file_rows"]
+        chosen_step = prov["bounds"]["chosen_step"]
         self.tbl_grid_provenance.setRowCount(len(file_rows))
+        # Calcular el menor paso nativo por pozo para mostrarlo en modo per_well
+        well_min_step: Dict[str, float] = {}
+        for row in file_rows:
+            fn = str(row["folder_name"])
+            es = float(row["effective_step"])
+            if fn not in well_min_step or es < well_min_step[fn]:
+                well_min_step[fn] = es
+
         for r_idx, row in enumerate(file_rows):
+            fn = str(row["folder_name"])
+            new_step_val = well_min_step[fn] if mode == "per_well" else chosen_step
             vals = [
                 str(row["well_name"]),
                 str(row["file_name"]),
@@ -2000,12 +2018,26 @@ class WellCuratorMainWindow(QMainWindow):
                 f"{row['data_max_depth']:.4f}",
                 str(row["header_step_raw"]),
                 f"{row['effective_step']:.4g}",
+                f"{new_step_val:.4g}",
                 str(row["step_origin"]),
             ]
             for c_idx, txt in enumerate(vals):
                 it = QTableWidgetItem(txt)
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.tbl_grid_provenance.setItem(r_idx, c_idx, it)
+
+        # Sincronizar columna Paso Nuevo [m] en la tabla de Revisión (Pestaña 3)
+        if self.tbl_review.rowCount() > 0:
+            self._populating_review_table = True
+            for r in range(self.tbl_review.rowCount()):
+                orig_it = self.tbl_review.item(r, 7)
+                orig_txt = orig_it.text() if orig_it else "auto"
+                new_txt = orig_txt if mode == "per_well" else f"{chosen_step:.4g}"
+                new_it = QTableWidgetItem(new_txt)
+                new_it.setFlags(new_it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                new_it.setBackground(QColor("#F8FAFC"))
+                self.tbl_review.setItem(r, 8, new_it)
+            self._populating_review_table = False
 
         step_rule = (
             "Cada pozo conserva su menor paso efectivo propio"
@@ -2296,11 +2328,19 @@ class WellCuratorMainWindow(QMainWindow):
 
     def _populate_review_table(self) -> None:
         self._populating_review_table = True
+        g_mode, g_step, _gs, _ge, _b = self.get_export_depth_grid_spec()
         self.tbl_review.setRowCount(len(self.llm_wells))
-        for r_idx, (fname, (res, _)) in enumerate(self.llm_wells.items()):
+        for r_idx, (fname, (res, dfs)) in enumerate(self.llm_wells.items()):
             meta = res.llm_metadata or {}
-            steps = [s.step for s in res.las_summaries if s.index_type == "DEPTH" and s.step > 0]
-            step_txt = f"{min(steps):.4g}" if steps else "auto"
+            eff_steps = [
+                compute_effective_step(s, dfs[s.file_name])
+                for s in res.las_summaries
+                if s.index_type == "DEPTH" and s.file_name in dfs
+            ]
+            orig_step_txt = f"{min(eff_steps):.4g}" if eff_steps else "auto"
+            new_step_txt = (
+                f"{g_step:.4g}" if (g_mode != "per_well" and g_step is not None) else orig_step_txt
+            )
 
             vals = [
                 (fname, False),
@@ -2310,7 +2350,8 @@ class WellCuratorMainWindow(QMainWindow):
                 (str(meta.get("coord_y") if meta.get("coord_y") is not None else ""), True),
                 (str(meta.get("cota") if meta.get("cota") is not None else ""), True),
                 (str(meta.get("crs_used") or ""), False),
-                (step_txt, False),
+                (orig_step_txt, False),
+                (new_step_txt, False),
                 (str(len(res.repeated_depth_curves)), False),
             ]
             for c_idx, (text, editable) in enumerate(vals):
@@ -2468,6 +2509,9 @@ class WellCuratorMainWindow(QMainWindow):
                 f"Start={t_start if t_start is not None else 'pozo'} | "
                 f"Stop={t_stop if t_stop is not None else 'pozo'}"
             )
+        clean_first = not self.chk_incremental.isChecked()
+        if clean_first:
+            self.export_summaries.clear()
         self.btn_run_llm.setEnabled(False)
         self.btn_export_output.setEnabled(False)
 
@@ -2489,6 +2533,7 @@ class WellCuratorMainWindow(QMainWindow):
             target_grid_step=t_step,
             target_grid_start=t_start,
             target_grid_stop=t_stop,
+            clean_before_export=clean_first,
         )
         self._export_worker.progress_sig.connect(self._on_worker_progress)
         self._export_worker.log_sig.connect(self.txt_console.appendPlainText)
@@ -2710,8 +2755,11 @@ class WellCuratorMainWindow(QMainWindow):
         ax_x = fig_x.add_subplot(111)
         if self._has_session_output and xpt_csv.exists():
             df_x = pd.read_csv(xpt_csv)
+            if self.export_summaries and not self.chk_incremental.isChecked():
+                session_wells = {ws.well_name for ws in self.export_summaries.values()}
+                df_x = df_x[df_x["Well"].astype(str).isin(session_wells)]
             p_col = "CP_SAP_final" if "CP_SAP_final" in df_x.columns and df_x["CP_SAP_final"].notna().any() else "CP_HYD_final"
-            if p_col in df_x.columns:
+            if not df_x.empty and p_col in df_x.columns:
                 for wn, grp in df_x.groupby("Well"):
                     ax_x.scatter(grp[p_col], grp["Station_Depth_m"], label=str(wn), s=50, edgecolor="black")
                 ax_x.invert_yaxis()
@@ -2720,6 +2768,8 @@ class WellCuratorMainWindow(QMainWindow):
                 ax_x.set_title("Estaciones en Tiempo (XPT)", fontweight="bold")
                 ax_x.grid(True, linestyle=":")
                 ax_x.legend(fontsize=8)
+            else:
+                ax_x.text(0.5, 0.5, "Sin estaciones XPT en la sesión actual", ha="center", va="center")
         else:
             ax_x.text(0.5, 0.5, "Sin estaciones XPT en la sesión actual", ha="center", va="center")
         fig_x.tight_layout()
@@ -2732,7 +2782,10 @@ class WellCuratorMainWindow(QMainWindow):
         ax = fig.add_subplot(111)
         if self._has_session_output and excel_path.exists():
             df = pd.read_excel(excel_path)
-            fixed = {"File", "Well", "UWI", "Start", "Stop", "Step", "X", "Y", "Elevation"}
+            if self.export_summaries and not self.chk_incremental.isChecked():
+                session_wells = {ws.well_name for ws in self.export_summaries.values()}
+                df = df[df["Well"].astype(str).isin(session_wells)].reset_index(drop=True)
+            fixed = set(FIXED_EXCEL_COLS) | {"Step"}
             curve_cols = [c for c in df.columns if c not in fixed]
             if len(df) > 0 and curve_cols:
                 mat = np.array([[1 if str(df.loc[r, c]).strip().lower() == "yes" else 0 for c in curve_cols] for r in range(len(df))])
@@ -2743,6 +2796,8 @@ class WellCuratorMainWindow(QMainWindow):
                 ax.set_xticks(range(len(curve_cols)))
                 ax.set_xticklabels(curve_cols, rotation=90, fontsize=6.5)
                 ax.set_title(f"Matriz Maestra ({len(df)} pozos x {len(curve_cols)} curvas)", fontweight="bold")
+            else:
+                ax.text(0.5, 0.5, "Sin pozos de la sesión actual en well_metadata.xlsx", ha="center", va="center")
         else:
             ax.text(0.5, 0.5, "Sin exportaciones aún en la sesión actual", ha="center", va="center")
         fig.tight_layout()
@@ -2815,9 +2870,7 @@ class WellCuratorMainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            import shutil as _shutil
-            if self.output_dir.exists():
-                _shutil.rmtree(self.output_dir, ignore_errors=True)
+            clean_output_artifacts(self.output_dir)
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.export_summaries.clear()
             self._refresh_output_tab()

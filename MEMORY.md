@@ -3,9 +3,12 @@ Memoria del proyecto entre sesiones. Máximo ~50 líneas: resume o elimina lo qu
 
 ## Estado actual
 - **Repositorio GitHub**: `https://github.com/CostaA6/well_curator`
-  - Rama activa `feat/spec-004-gui`: **Spec 004 completa (T1–T9)** con **RF-10** validado (`8/8 passed` Spec 004 + regresiones Specs 001–003 OK).
+  - Rama activa `feat/spec-004-gui`: **Spec 004 completa (T1–T10)** con **RF-11** validado (`9/9 passed` Spec 004).
 
 ## Decisiones clave (y por qué)
+- **Trazabilidad Dual (`Paso Original` vs `Paso Nuevo`) y Aislamiento de Salida (RF-11)**:
+  - `FIXED_EXCEL_COLS` en `well_exporter.py` incluye `Original Step` y `New Step` (con migración limpia si lee un Excel legado con `Step`). Pestaña 3 (`tbl_review`) y Pestaña 4 (`tbl_grid_provenance`) exponen `Paso Orig. [m]` y `Paso Nuevo [m]`.
+  - Cuando **Modo Incremental** está desactivado, `ExportWorker` ejecuta `clean_output_artifacts(output_dir)` antes de exportar y `_plot_excel_matrix` filtra a los pozos de la sesión para evitar residuos de corridas anteriores.
 - **Vaciado de Memoria al Iniciar + Pestaña 4 Dedicada de Homogeneización y QC (RF-10)**:
   - Al iniciar (`WellCuratorMainWindow` / `_init_empty_project`) se limpian todas las tablas, lienzos Matplotlib, vista de mapa y las carpetas residuales en `workspace_imports/` no referenciadas por `projects/*.wellcurator.json` (`clean_unreferenced_workspace_imports`), bloqueando la lectura pasiva de `output/` previo salvo exportación en la sesión o apertura manual en Pestaña 6.
   - Nueva Pestaña 4 (`4. Homogeneización de Profundidad (QC)`) muestra procedencia exacta (`inspect_depth_grid_provenance`: Header `~Well` vs mediana `Δz` en `~A`, `FT->M`, origen de `Start/Stop/Step`) y visor QC visual dual completo + zoom punto a punto (`prepare_interpolation_qc_data`).

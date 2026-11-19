@@ -208,8 +208,8 @@ def test_rf4_rf5_rf6_full_output_export_and_visuals(explored_wells_with_llm) -> 
     # Verificar estructura final de output/well_metadata.xlsx
     excel_path = OUTPUT_DIR / "well_metadata.xlsx"
     df_excel = pd.read_excel(excel_path)
-    assert list(df_excel.columns[:9]) == FIXED_EXCEL_COLS
-    curve_cols = list(df_excel.columns[9:])
+    assert list(df_excel.columns[:len(FIXED_EXCEL_COLS)]) == FIXED_EXCEL_COLS
+    curve_cols = list(df_excel.columns[len(FIXED_EXCEL_COLS):])
     assert curve_cols == sorted(curve_cols), "Las columnas de curvas en el Excel deben estar ordenadas alfabéticamente"
     for c in curve_cols:
         vals = set(df_excel[c].astype(str).str.lower().unique())

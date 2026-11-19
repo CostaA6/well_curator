@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.las_explorer import WellExplorationResult, LasFileSummary
+from scripts.well_exporter import FIXED_EXCEL_COLS
 
 
 def plot_well_depth_coverage(
@@ -371,7 +372,7 @@ def plot_excel_availability_matrix(excel_path: Path, output_dir: Path) -> Path:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     df = pd.read_excel(excel_path)
-    fixed_cols = ["File", "Well", "UWI", "Start", "Stop", "Step", "X", "Y", "Elevation"]
+    fixed_cols = set(FIXED_EXCEL_COLS) | {"Step"}
     curve_cols = [c for c in df.columns if c not in fixed_cols]
 
     binary_matrix = np.zeros((len(df), len(curve_cols)), dtype=int)
@@ -388,7 +389,7 @@ def plot_excel_availability_matrix(excel_path: Path, output_dir: Path) -> Path:
 
     ax.set_yticks(range(len(df)))
     well_labels = [
-        f"{row['Well']} ({row['UWI']}) [{row['Start']:.1f}-{row['Stop']:.1f}m, step={row['Step']}m]"
+        f"{row['Well']} ({row['UWI']}) [{row['Start']:.1f}-{row['Stop']:.1f}m, step={row['New Step'] if 'New Step' in df.columns else row.get('Step', '')}m]"
         for _, row in df.iterrows()
     ]
     ax.set_yticklabels(well_labels, fontsize=8.5, fontweight="bold")

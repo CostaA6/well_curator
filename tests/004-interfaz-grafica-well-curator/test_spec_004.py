@@ -38,6 +38,8 @@ from scripts.ui_controller import (
     stage_well_drop_items,
 )
 from scripts.well_exporter import (
+    FIXED_EXCEL_COLS,
+    clean_output_artifacts,
     compute_batch_depth_grid_bounds,
     export_well_to_output,
     inspect_depth_grid_provenance,
@@ -738,4 +740,126 @@ def test_rf10_clean_startup_memory_and_homogenization_qc_tab(tmp_path: Path) -> 
     assert win.cmb_qc_well.count() == 0
     assert win.cmb_qc_curve.count() == 0
     assert win._collect_map_records() == []
+    win.close()
+
+
+def test_rf11_original_and_new_step_columns_and_clean_session_matrix(tmp_path: Path) -> None:
+    """
+    RF-11:
+    1. Verifica que `well_metadata.xlsx` incluya `Original Step` y `New Step` distintos tras homogeneizar.
+    2. Verifica que `clean_output_artifacts` (modo no incremental) evite que pozos de corridas
+       previas queden pegados en `well_metadata.xlsx` y en la Matriz Maestra Excel de Pestaña 5.
+    3. Verifica las columnas `Paso Orig. [m]` y `Paso Nuevo [m]` en Pestañas 3 y 4 y guarda `gui_tab5_matrix_rf11.png`.
+    """
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    profile = load_field_profile("golfo_san_jorge_faja2")
+
+    # Simular carpeta output/ contaminada con una ejecución previa de 4 pozos viejos
+    out_dir = tmp_path / "output_rf11"
+    stale_wells = []
+    for old_w in ["YPF.SC.OLD-1", "YPF.SC.OLD-2"]:
+        res_o, dfs_o = explore_well_directory(INPUT_DIR / "YPF.SC.CVa-38", target_depth_unit="M")
+        res_o.llm_metadata = {
+            "nombre_pozo": old_w,
+            "uwi": "AR010000999900",
+            "coord_x": 2481000.0,
+            "coord_y": 4834000.0,
+            "cota": 200.0,
+            "crs_used": "EPSG:5344",
+        }
+        stale_wells.append(export_well_to_output(res_o, dfs_o, out_dir, field_profile=profile, manual_override=True))
+    assert (out_dir / "well_metadata.xlsx").exists()
+    assert len(pd.read_excel(out_dir / "well_metadata.xlsx")) == 2
+
+    # Limpieza no incremental + exportación de 2 pozos reales con pasos nativos distintos (0.0762 y 0.1524) a paso común 0.50 m
+    clean_output_artifacts(out_dir)
+    selected_wells = ["YPF.SC.CVa-19", "YPF.SC.CVa-38"]
+    loaded = []
+    for idx, wn in enumerate(selected_wells):
+        res, dfs = explore_well_directory(INPUT_DIR / wn, target_depth_unit="M")
+        res.llm_metadata = {
+            "nombre_pozo": wn,
+            "uwi": f"AR010000{19 + idx}00",
+            "coord_x": 2481500.0 + idx * 50,
+            "coord_y": 4834500.0 + idx * 50,
+            "cota": 290.0,
+            "crs_used": "EPSG:5344",
+        }
+        loaded.append((res, dfs))
+
+    summaries = [
+        export_well_to_output(
+            well=res,
+            well_dfs=dfs,
+            output_dir=out_dir,
+            field_profile=profile,
+            manual_override=True,
+            target_grid_step=0.5,
+        )
+        for res, dfs in loaded
+    ]
+    df_ex = pd.read_excel(out_dir / "well_metadata.xlsx")
+    assert list(df_ex.columns[:len(FIXED_EXCEL_COLS)]) == FIXED_EXCEL_COLS
+    assert "Original Step" in df_ex.columns and "New Step" in df_ex.columns
+    assert set(df_ex["Well"].astype(str)) == set(selected_wells)
+    assert len(df_ex) == 2
+
+    row19 = df_ex[df_ex["Well"] == "YPF.SC.CVa-19"].iloc[0]
+    row38 = df_ex[df_ex["Well"] == "YPF.SC.CVa-38"].iloc[0]
+    assert float(row19["Original Step"]) == pytest.approx(0.0762, abs=1e-4)
+    assert float(row19["New Step"]) == pytest.approx(0.5, abs=1e-4)
+    assert float(row38["Original Step"]) == pytest.approx(0.1524, abs=1e-4)
+    assert float(row38["New Step"]) == pytest.approx(0.5, abs=1e-4)
+
+    # GUI verification: tablas de Pestaña 3 y Pestaña 4 + Matriz Maestra en Pestaña 5
+    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtWidgets import QApplication
+    from scripts.app_gui import APP_STYLESHEET, WellCuratorMainWindow
+
+    app = QApplication.instance() or QApplication([])
+    for font_file in ("segoeui.ttf", "segoeuib.ttf", "consola.ttf"):
+        fp = Path("C:/Windows/Fonts") / font_file
+        if fp.exists():
+            QFontDatabase.addApplicationFont(str(fp))
+    app.setFont(QFont("Segoe UI", 9))
+    app.setStyle("Fusion")
+    app.setStyleSheet(APP_STYLESHEET)
+
+    win = WellCuratorMainWindow(initial_output_dir=out_dir, clean_staging_on_startup=False)
+    win.show()
+    app.processEvents()
+
+    for wn, (res, dfs), ws in zip(selected_wells, loaded, summaries):
+        win.prescanned_wells[wn] = (res, dfs)
+        win.llm_wells[wn] = (res, dfs)
+        win.export_summaries[wn] = ws
+    win._has_session_output = True
+
+    idx_cs = win.cmb_grid_mode.findData("common_step")
+    idx_05 = win.cmb_grid_step_preset.findData(0.5)
+    win.cmb_grid_mode.setCurrentIndex(idx_cs)
+    win.cmb_grid_step_preset.setCurrentIndex(idx_05)
+    win._populate_review_table()
+    win._refresh_homogenization_tab()
+
+    # Pestaña 3: 10 columnas con Paso Orig. [m] y Paso Nuevo [m]
+    assert win.tbl_review.columnCount() == 10
+    assert win.tbl_review.item(0, 7).text() == "0.0762"
+    assert win.tbl_review.item(0, 8).text() == "0.5"
+    assert win.tbl_review.item(1, 7).text() == "0.1524"
+    assert win.tbl_review.item(1, 8).text() == "0.5"
+
+    # Pestaña 4: 9 columnas con Paso Orig. [m] y Paso Nuevo [m]
+    assert win.tbl_grid_provenance.columnCount() == 9
+    assert win.tbl_grid_provenance.item(0, 7).text() == "0.5"
+
+    # Pestaña 5: Matriz Maestra solo con los 2 pozos de la sesión (sin columnas Original/New Step como curvas)
+    win._plot_excel_matrix()
+    win.tabs.setCurrentIndex(4)
+    win.subtabs_viz.setCurrentIndex(3)  # Matriz Maestra Excel (yes/no)
+    app.processEvents()
+    mat_png = IMAGES_DIR / "gui_tab5_matrix_rf11.png"
+    win.grab().save(str(mat_png))
+    assert mat_png.exists() and mat_png.stat().st_size > 10000
     win.close()
