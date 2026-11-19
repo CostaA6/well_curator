@@ -46,16 +46,19 @@ class WellExportSummary:
     coord_resolution_note: str = ""
 
 
-def compute_effective_step(summary: LasFileSummary, df: pd.DataFrame) -> float:
+def describe_effective_step_source(summary: LasFileSummary, df: pd.DataFrame) -> Tuple[float, str]:
     """
-    Obtiene el paso efectivo de muestreo de un archivo .LAS:
-    - Si `STEP > 0` en el encabezado, utiliza ese valor.
-    - Si `STEP == 0` (ej. archivos Baker Atlas de CVa-19 y CVa-24 muestreados a 1/4 pie = 0.0762m
-      con profundidades truncadas a 3 decimales), calcula el paso medio robusto y lo ajusta al
-      paso estándar de perfilaje más cercano si difiere en menos de 0.5 mm.
+    Calcula el paso efectivo de muestreo (en metros) y devuelve además una descripción
+    explícita de su procedencia (encabezado `~Well` o cálculo por mediana Δz en `~A`).
     """
     if summary.step and summary.step > 0:
-        return round(float(summary.step), 4)
+        step_m = round(float(summary.step), 4)
+        scale = float(getattr(summary, "depth_unit_scale", 1.0) or 1.0)
+        orig_u = str(getattr(summary, "original_index_unit", "") or summary.index_unit or "M").upper()
+        if abs(scale - 1.0) > 1e-6:
+            orig_step = round(step_m / scale, 4)
+            return step_m, f"Header ~Well (STEP={orig_step} {orig_u} × {scale:.4f} → {step_m} m)"
+        return step_m, f"Header ~Well (STEP={step_m} {orig_u})"
 
     index_col = df.columns[0]
     valid_idx = df[index_col].dropna().sort_values().unique()
@@ -69,10 +72,22 @@ def compute_effective_step(summary: LasFileSummary, df: pd.DataFrame) -> float:
             standard_steps = (0.0254, 0.0508, 0.0762, 0.1, 0.1524, 0.2, 0.25, 0.3048, 0.5, 1.0)
             for std_s in standard_steps:
                 if abs(mean_step - std_s) < 5e-4:
-                    return std_s
-            return round(mean_step, 4)
+                    return std_s, (
+                        f"Calculado desde ~A (Header STEP=0): Δz media={round(mean_step, 4)} m "
+                        f"→ ajustado a estándar {std_s} m"
+                    )
+            val = round(mean_step, 4)
+            return val, f"Calculado desde ~A (Header STEP=0): Δz media={val} m"
 
-    return 0.1524
+    return 0.1524, "Fallback estándar (0.1524 m): sin suficientes muestras numéricas en ~A"
+
+
+def compute_effective_step(summary: LasFileSummary, df: pd.DataFrame) -> float:
+    """
+    Obtiene el paso efectivo de muestreo de un archivo .LAS (delegando en `describe_effective_step_source`).
+    """
+    step_val, _ = describe_effective_step_source(summary, df)
+    return step_val
 
 
 def compute_batch_depth_grid_bounds(
@@ -129,6 +144,210 @@ def compute_batch_depth_grid_bounds(
         "chosen_step": chosen_step,
         "rows": num_steps + 1,
         "wells_with_depth": wells_with_depth,
+    }
+
+
+def inspect_depth_grid_provenance(
+    wells_items: Sequence[Tuple[WellExplorationResult, Dict[str, pd.DataFrame]]],
+    target_step: Optional[float] = None,
+) -> Dict[str, object]:
+    """
+    Construye el detalle completo de procedencia de parámetros de grilla (`STEP`, `Start`, `Stop`,
+    unidades) por archivo `.LAS` y a nivel de lote (Spec 004 - RF-10).
+    """
+    file_rows: List[Dict[str, object]] = []
+    min_entries: List[Tuple[float, str, str]] = []
+    max_entries: List[Tuple[float, str, str]] = []
+    step_entries: List[Tuple[float, str, str, str]] = []
+    wells_seen = set()
+
+    for well, well_dfs in wells_items:
+        wlabel = str((well.llm_metadata or {}).get("nombre_pozo") or well.well_folder_name)
+        depth_summaries = [s for s in well.las_summaries if s.index_type == "DEPTH" and s.file_name in well_dfs]
+        for s in depth_summaries:
+            raw_df = well_dfs[s.file_name]
+            if raw_df is None or raw_df.empty:
+                continue
+            idx_col = raw_df.columns[0]
+            valid_idx = raw_df[idx_col].dropna().sort_values()
+            if valid_idx.empty:
+                continue
+            d_min = round(float(valid_idx.iloc[0]), 4)
+            d_max = round(float(valid_idx.iloc[-1]), 4)
+            eff_step, step_origin = describe_effective_step_source(s, raw_df)
+            orig_u = str(getattr(s, "original_index_unit", "") or s.index_unit or "M")
+            scale = float(getattr(s, "depth_unit_scale", 1.0) or 1.0)
+            hdr_step_raw = (
+                round(float(s.step) / scale, 4)
+                if (s.step and abs(scale - 1.0) > 1e-6)
+                else round(float(s.step or 0.0), 4)
+            )
+
+            file_rows.append({
+                "folder_name": well.well_folder_name,
+                "well_name": wlabel,
+                "file_name": s.file_name,
+                "original_unit": f"{orig_u} → M (×{scale:.4f})" if abs(scale - 1.0) > 1e-6 else orig_u,
+                "data_min_depth": d_min,
+                "data_max_depth": d_max,
+                "header_step_raw": hdr_step_raw,
+                "effective_step": eff_step,
+                "step_origin": step_origin,
+            })
+            min_entries.append((d_min, wlabel, s.file_name))
+            max_entries.append((d_max, wlabel, s.file_name))
+            step_entries.append((eff_step, wlabel, s.file_name, step_origin))
+            wells_seen.add(well.well_folder_name)
+
+    if not file_rows:
+        raise ValueError("Ninguno de los pozos cargados contiene datos válidos en profundidad.")
+
+    bounds = compute_batch_depth_grid_bounds(wells_items, target_step=target_step)
+    start_val, start_w, start_f = min(min_entries, key=lambda x: x[0])
+    stop_val, stop_w, stop_f = max(max_entries, key=lambda x: x[0])
+    min_s_val, min_s_w, min_s_f, min_s_origin = min(step_entries, key=lambda x: x[0])
+
+    if target_step is not None and target_step > 0:
+        chosen_origin = f"Definido por el usuario: {bounds['chosen_step']:.4g} m"
+    else:
+        chosen_origin = f"Automático = menor paso del lote ({min_s_val:.4g} m) desde {min_s_w} / {min_s_f} [{min_s_origin}]"
+
+    return {
+        "bounds": bounds,
+        "wells_count": len(wells_seen),
+        "files_count": len(file_rows),
+        "file_rows": file_rows,
+        "start_origin": f"{start_val:.4f} m (mínimo ~A de {start_w} / {start_f})",
+        "stop_origin": f"{stop_val:.4f} m (máximo ~A de {stop_w} / {stop_f})",
+        "min_step_origin": f"{min_s_val:.4g} m ({min_s_w} / {min_s_f}: {min_s_origin})",
+        "chosen_step_origin": chosen_origin,
+    }
+
+
+def prepare_interpolation_qc_data(
+    well: WellExplorationResult,
+    well_dfs: Dict[str, pd.DataFrame],
+    curve_name: str,
+    repeat_strategy: Literal["keep_all", "merge"] = "keep_all",
+    per_curve_repeat_strategy: Optional[Dict[str, Literal["keep_all", "merge"]]] = None,
+    target_grid_step: Optional[float] = None,
+    target_grid_start: Optional[float] = None,
+    target_grid_stop: Optional[float] = None,
+) -> Dict[str, object]:
+    """
+    Prepara datos de control de calidad visual para comparar la curva cruda original
+    vs su versión homogeneizada/interpolada sobre la grilla objetivo (Spec 004 - RF-10).
+    """
+    meta = dict(well.llm_metadata or {})
+    meta.setdefault("nombre_pozo", well.well_folder_name)
+
+    unified_df, grid_start, grid_stop, grid_step, exported_curves = build_unified_well_depth_df(
+        well=well,
+        well_dfs=well_dfs,
+        normalized_meta=meta,
+        repeat_strategy=repeat_strategy,
+        per_curve_repeat_strategy=per_curve_repeat_strategy,
+        target_grid_step=target_grid_step,
+        target_grid_start=target_grid_start,
+        target_grid_stop=target_grid_stop,
+    )
+
+    if curve_name not in unified_df.columns:
+        base_cand = curve_name.split(":")[0]
+        if base_cand in unified_df.columns:
+            curve_name = base_cand
+        elif exported_curves:
+            curve_name = exported_curves[0]
+        else:
+            raise ValueError(f"Curva {curve_name} no encontrada en {well.well_folder_name}.")
+
+    grid_depths = unified_df["DEPTH"].to_numpy(dtype=float)
+    interp_values = unified_df[curve_name].to_numpy(dtype=float)
+
+    base_mnemonic = curve_name.split(":")[0]
+    raw_series: List[Dict[str, object]] = []
+    unit = ""
+    raw_eff_steps: List[float] = []
+    step_origins: List[str] = []
+
+    for s in well.las_summaries:
+        if s.index_type != "DEPTH" or s.file_name not in well_dfs:
+            continue
+        df_f = well_dfs[s.file_name]
+        idx_col = df_f.columns[0]
+        for col_pos, occ in enumerate(s.curves, start=1):
+            if col_pos >= df_f.shape[1]:
+                continue
+            match = (occ.assigned_name == curve_name) or (
+                curve_name == base_mnemonic and occ.original_mnemonic == base_mnemonic
+            )
+            if not match:
+                continue
+            sub = df_f[[idx_col]].copy()
+            sub["_val"] = df_f.iloc[:, col_pos]
+            sub = sub.dropna().sort_values(by=idx_col)
+            if sub.empty:
+                continue
+            d_arr = sub[idx_col].to_numpy(dtype=float)
+            v_arr = sub["_val"].to_numpy(dtype=float)
+            eff_s, orig_s = describe_effective_step_source(s, df_f)
+            raw_eff_steps.append(eff_s)
+            step_origins.append(f"{s.file_name}: {orig_s}")
+            unit = occ.unit or unit
+            raw_series.append({
+                "label": f"{s.file_name} ({occ.assigned_name})",
+                "depth": d_arr,
+                "values": v_arr,
+                "eff_step": eff_s,
+            })
+
+    valid_grid_mask = ~np.isnan(interp_values)
+    mae_val: Optional[float] = None
+    total_raw_samples = sum(len(rs["depth"]) for rs in raw_series)
+    if raw_series and np.sum(valid_grid_mask) >= 2:
+        gd_v = grid_depths[valid_grid_mask]
+        gv_v = interp_values[valid_grid_mask]
+        diffs_list: List[np.ndarray] = []
+        for rs in raw_series:
+            rd, rv = rs["depth"], rs["values"]
+            inside = (rd >= gd_v[0] - 1e-4) & (rd <= gd_v[-1] + 1e-4)
+            if np.any(inside):
+                re_eval = np.interp(rd[inside], gd_v, gv_v)
+                diffs_list.append(np.abs(rv[inside] - re_eval))
+        if diffs_list:
+            mae_val = round(float(np.mean(np.concatenate(diffs_list))), 4)
+
+    zoom_start, zoom_stop = grid_start, min(grid_stop, grid_start + 25.0)
+    if np.any(valid_grid_mask):
+        gd_v = grid_depths[valid_grid_mask]
+        span = min(25.0, max(5.0, (float(gd_v[-1]) - float(gd_v[0])) * 0.15))
+        if len(gd_v) > 20:
+            mid_z = float(gd_v[len(gd_v) // 3])
+            zoom_start = round(max(float(gd_v[0]), mid_z - span * 0.5), 2)
+            zoom_stop = round(min(float(gd_v[-1]), zoom_start + span), 2)
+        else:
+            zoom_start = round(float(gd_v[0]), 2)
+            zoom_stop = round(float(gd_v[-1]), 2)
+
+    return {
+        "well_name": str(meta["nombre_pozo"]),
+        "curve_name": curve_name,
+        "unit": unit or "u.",
+        "raw_series": raw_series,
+        "grid_depths": grid_depths,
+        "interp_values": interp_values,
+        "grid_start": grid_start,
+        "grid_stop": grid_stop,
+        "grid_step": grid_step,
+        "raw_eff_steps": raw_eff_steps,
+        "step_origins": step_origins,
+        "raw_samples": int(total_raw_samples),
+        "grid_total_rows": int(len(grid_depths)),
+        "grid_valid_rows": int(np.sum(valid_grid_mask)),
+        "grid_nan_rows": int(np.sum(~valid_grid_mask)),
+        "mae_reinterpolation": mae_val,
+        "zoom_start": zoom_start,
+        "zoom_stop": zoom_stop,
     }
 
 

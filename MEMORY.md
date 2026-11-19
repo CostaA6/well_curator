@@ -3,9 +3,12 @@ Memoria del proyecto entre sesiones. Máximo ~50 líneas: resume o elimina lo qu
 
 ## Estado actual
 - **Repositorio GitHub**: `https://github.com/CostaA6/well_curator`
-  - Rama activa `feat/spec-004-gui`: **Spec 004 completa (T1–T8)** con **RF-9** validado (`7/7 passed` Spec 004 + regresiones Specs 001–003 OK).
+  - Rama activa `feat/spec-004-gui`: **Spec 004 completa (T1–T9)** con **RF-10** validado (`8/8 passed` Spec 004 + regresiones Specs 001–003 OK).
 
 ## Decisiones clave (y por qué)
+- **Vaciado de Memoria al Iniciar + Pestaña 4 Dedicada de Homogeneización y QC (RF-10)**:
+  - Al iniciar (`WellCuratorMainWindow` / `_init_empty_project`) se limpian todas las tablas, lienzos Matplotlib, vista de mapa y las carpetas residuales en `workspace_imports/` no referenciadas por `projects/*.wellcurator.json` (`clean_unreferenced_workspace_imports`), bloqueando la lectura pasiva de `output/` previo salvo exportación en la sesión o apertura manual en Pestaña 6.
+  - Nueva Pestaña 4 (`4. Homogeneización de Profundidad (QC)`) muestra procedencia exacta (`inspect_depth_grid_provenance`: Header `~Well` vs mediana `Δz` en `~A`, `FT->M`, origen de `Start/Stop/Step`) y visor QC visual dual completo + zoom punto a punto (`prepare_interpolation_qc_data`).
 - **Regularización de Grilla Común Pre-Exportación (RF-9)**:
   - `well_exporter.py` (`compute_batch_depth_grid_bounds`, `build_unified_well_depth_df`), `run_pipeline.py` (`--grid-mode`, `--grid-step`) y Pestaña 3 soportan `per_well` (nativo), `common_step` (mismo paso elegido entre pozos) y `global_grid` (mismo `[Global Start, Global Stop, Step]` e idéntico vector `DEPTH` en todos los CSVs exportados, manteniendo `NaN` fuera del rango medido sin extrapolar).
   - Selector de carpeta `output/` sincronizado en Pestañas 2, 3, 5, badge superior y guardado/carga `.wellcurator.json`.

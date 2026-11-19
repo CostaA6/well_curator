@@ -26,6 +26,7 @@ from scripts.llm_extractor import BASE_SYSTEM_PROMPT, METADATA_JSON_SCHEMA, LLMC
 from scripts.llm_extractor import test_llm_connection as probe_llm_connection
 from scripts.ui_controller import (
     build_folium_well_map_html,
+    clean_unreferenced_workspace_imports,
     discover_well_sources,
     get_crs_details,
     inverse_project_to_wgs84,
@@ -36,7 +37,12 @@ from scripts.ui_controller import (
     stage_grouped_well_drop_items,
     stage_well_drop_items,
 )
-from scripts.well_exporter import compute_batch_depth_grid_bounds, export_well_to_output
+from scripts.well_exporter import (
+    compute_batch_depth_grid_bounds,
+    export_well_to_output,
+    inspect_depth_grid_provenance,
+    prepare_interpolation_qc_data,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 INPUT_DIR = PROJECT_ROOT / "Input"
@@ -351,7 +357,7 @@ def test_rf1_pyside6_gui_headless_smoke_and_screenshots() -> None:
 
     win = WellCuratorMainWindow(initial_output_dir=OUTPUT_DIR)
     win.show()
-    assert win.tabs.count() == 5
+    assert win.tabs.count() == 6
 
     # Simular que el usuario marca cargar desde Input/ y ejecuta pre-escaneo
     win.chk_include_input.setChecked(True)
@@ -400,7 +406,7 @@ def test_rf1_pyside6_gui_headless_smoke_and_screenshots() -> None:
     tab3_png = IMAGES_DIR / "gui_tab3_review_report.png"
     win.grab().save(str(tab3_png))
 
-    win.tabs.setCurrentIndex(3)
+    win.tabs.setCurrentIndex(4)  # Pestaña 5. Validación, Mapa y Logs
     win.subtabs_viz.setCurrentIndex(1)  # Visor multi-track de Logs
     app.processEvents()
     tab4_png = IMAGES_DIR / "gui_tab4_logs_viewer.png"
@@ -612,9 +618,124 @@ def test_rf9_cross_well_common_depth_grid_and_output_selector(tmp_path: Path) ->
     assert win._selected_target_grid_step() == pytest.approx(0.1524, abs=1e-4)
     assert Path(win.txt_tab5_output_dir.text()) == out_global
 
-    win.tabs.setCurrentIndex(4)  # Pestaña 5. Salidas (output/)
+    win.tabs.setCurrentIndex(5)  # Pestaña 6. Salidas (output/)
     app.processEvents()
     tab5_png = IMAGES_DIR / "gui_tab5_output_selector.png"
     win.grab().save(str(tab5_png))
     assert tab5_png.exists() and tab5_png.stat().st_size > 10000
+    win.close()
+
+
+def test_rf10_clean_startup_memory_and_homogenization_qc_tab(tmp_path: Path) -> None:
+    """
+    RF-10:
+    1. Verifica que al iniciar la aplicación toda la memoria y staging residual no referenciado
+       se limpia automáticamente (no muestra residuos de ejecuciones previas ni lee output/ pasivo).
+    2. Verifica `inspect_depth_grid_provenance` y `prepare_interpolation_qc_data` (origen de STEP,
+       Start, Stop, conversión FT->M o mediana Δz cuando STEP=0, métricas QC crudo vs grilla).
+    3. Verifica Pestaña 4 (`4. Homogeneización de Profundidad (QC)`) y captura `gui_tab4_homogenization_qc.png`.
+    """
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Limpieza segura de workspace_imports no referenciados preservando proyectos guardados
+    p_dir = tmp_path / "projects"
+    i_dir = tmp_path / "workspace_imports"
+    p_dir.mkdir()
+    kept_well = i_dir / "Pozo_Guardado"
+    stale_well = i_dir / "Pozo_Huerfano_Previo"
+    kept_well.mkdir(parents=True)
+    stale_well.mkdir(parents=True)
+    (p_dir / "saved.wellcurator.json").write_text(
+        json.dumps({"wells": [{"folder_path": str(kept_well)}]}),
+        encoding="utf-8",
+    )
+    removed = clean_unreferenced_workspace_imports(projects_dir=p_dir, imports_dir=i_dir)
+    assert removed == 1
+    assert kept_well.exists()
+    assert not stale_well.exists()
+
+    # 2. Procedencia de parámetros y QC de interpolación sobre pozos reales
+    well_names = ["YPF.SC.CVa-19", "YPF.SC.CVa-25", "YPF.SC.CVa-38"]
+    loaded_items = []
+    for wn in well_names:
+        res, dfs = explore_well_directory(INPUT_DIR / wn, target_depth_unit="M")
+        res.llm_metadata = {"nombre_pozo": wn}
+        loaded_items.append((res, dfs))
+
+    prov = inspect_depth_grid_provenance(loaded_items, target_step=None)
+    assert prov["wells_count"] == 3
+    assert prov["files_count"] >= 3
+    origins_text = " | ".join(str(r["step_origin"]) for r in prov["file_rows"])
+    assert "Header STEP=0" in origins_text
+    assert "Header ~Well" in origins_text
+
+    # Curva disponible en CVa-38 sobre grilla global 0.1524 m
+    cva38_res, cva38_dfs = loaded_items[2]
+    first_curve = sorted(cva38_res.all_assigned_depth_curves)[0]
+    qc = prepare_interpolation_qc_data(
+        well=cva38_res,
+        well_dfs=cva38_dfs,
+        curve_name=first_curve,
+        target_grid_step=0.1524,
+        target_grid_start=prov["bounds"]["global_start"],
+        target_grid_stop=prov["bounds"]["global_stop"],
+    )
+    assert qc["grid_step"] == pytest.approx(0.1524, abs=1e-4)
+    assert qc["raw_samples"] > 0
+    assert qc["grid_total_rows"] == len(qc["grid_depths"])
+    assert qc["zoom_stop"] > qc["zoom_start"]
+
+    # 3. Verificación GUI: arranque limpio no lee OUTPUT_DIR viejo + Pestaña 4 QC visual
+    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtWidgets import QApplication
+    from scripts.app_gui import APP_STYLESHEET, WellCuratorMainWindow
+
+    app = QApplication.instance() or QApplication([])
+    for font_file in ("segoeui.ttf", "segoeuib.ttf", "consola.ttf"):
+        fp = Path("C:/Windows/Fonts") / font_file
+        if fp.exists():
+            QFontDatabase.addApplicationFont(str(fp))
+    app.setFont(QFont("Segoe UI", 9))
+    app.setStyle("Fusion")
+    app.setStyleSheet(APP_STYLESHEET)
+
+    win = WellCuratorMainWindow(initial_output_dir=OUTPUT_DIR)
+    win.show()
+    app.processEvents()
+
+    # Al iniciar, incluso apuntando a OUTPUT_DIR con datos previos, no filtra ejecuciones pasadas
+    assert win._has_session_output is False
+    assert win._collect_map_records() == []
+    assert win.tbl_out_excel.rowCount() == 0
+    assert win.tbl_grid_provenance.rowCount() == 0
+
+    # Cargar pozos en memoria y abrir Pestaña 4: Homogeneización de Profundidad (QC)
+    for wn, (res, dfs) in zip(well_names, loaded_items):
+        win.prescanned_wells[wn] = (res, dfs)
+        win.llm_wells[wn] = (res, dfs)
+
+    idx_global = win.cmb_grid_mode.findData("global_grid")
+    idx_step = win.cmb_grid_step_preset.findData(0.1524)
+    win.cmb_grid_mode.setCurrentIndex(idx_global)
+    win.cmb_grid_step_preset.setCurrentIndex(idx_step)
+    win._refresh_homogenization_tab()
+
+    assert win.tbl_grid_provenance.rowCount() >= 3
+    assert "Origen del Paso" in win.lbl_grid_provenance.text()
+    assert win.cmb_qc_well.count() == 3
+    assert win.cmb_qc_curve.count() > 0
+
+    win.tabs.setCurrentIndex(3)  # Pestaña 4. Homogeneización de Profundidad (QC)
+    app.processEvents()
+    tab4_qc_png = IMAGES_DIR / "gui_tab4_homogenization_qc.png"
+    win.grab().save(str(tab4_qc_png))
+    assert tab4_qc_png.exists() and tab4_qc_png.stat().st_size > 10000
+
+    # Al pulsar Nuevo Proyecto se vuelve a vaciar todo completamente
+    win._init_empty_project()
+    assert win.tbl_grid_provenance.rowCount() == 0
+    assert win.cmb_qc_well.count() == 0
+    assert win.cmb_qc_curve.count() == 0
+    assert win._collect_map_records() == []
     win.close()

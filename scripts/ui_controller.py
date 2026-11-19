@@ -635,3 +635,43 @@ def load_project_file(project_path: Path) -> Dict[str, object]:
         raise ValueError(f"El archivo {project_path.name} no es un proyecto válido de Well Curator.")
     return data
 
+
+def clean_unreferenced_workspace_imports(
+    projects_dir: Optional[Path] = None,
+    imports_dir: Optional[Path] = None,
+) -> int:
+    """
+    Limpia carpetas residuales en `workspace_imports/` de sesiones anteriores que NO estén
+    referenciadas por ningún proyecto guardado en `projects/*.wellcurator.json`, evitando que
+    el programa conserve datos de ejecuciones previas al iniciar (Spec 004 - RF-10).
+    Nunca toca `Input/`.
+    """
+    p_dir = projects_dir or (PROJECT_ROOT / "projects")
+    i_dir = imports_dir or WORKSPACE_IMPORTS_DIR
+    if not i_dir.exists():
+        return 0
+
+    referenced_paths: set[Path] = set()
+    if p_dir.exists():
+        for pf in p_dir.glob("*.json"):
+            try:
+                pdata = json.loads(pf.read_text(encoding="utf-8"))
+                for w in pdata.get("wells", []):
+                    fp = str(w.get("folder_path") or "").strip()
+                    if fp:
+                        referenced_paths.add(Path(fp).resolve())
+            except Exception:
+                continue
+
+    removed = 0
+    for child in list(i_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        rc = child.resolve()
+        # Conservar si alguna ruta de proyecto apunta a esta carpeta o a un subdirectorio suyo
+        is_kept = any(rc == ref or rc in ref.parents for ref in referenced_paths)
+        if not is_kept:
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+    return removed
+

@@ -104,6 +104,19 @@ Replicar y hacer interactivas dentro de la app todas las validaciones visuales d
 - **Selector de carpeta de salida (`output/`) sincronizado en Pestañas 2, 3 y 5**:
   - En Pestaña 3 (justo antes de exportar) y en Pestaña 5 (`5. Salidas`) se puede explorar o elegir cualquier carpeta `output/` existente o nueva, sincronizando automáticamente Pestaña 2, Pestaña 3, Pestaña 5, el badge superior y la vista de archivos generados.
 
+### RF-10 — Limpieza Total de Memoria al Iniciar + Pestaña Dedicada de Homogeneización de Profundidad (QC Visual y Procedencia de Parámetros)
+- **Vaciado completo de memoria y estado previo al iniciar (`_init_empty_project(is_startup=True)`)**:
+  - Al iniciar el aplicativo (o crear un `Nuevo Proyecto`), se limpian explícitamente todas las estructuras en memoria, tablas, lienzos Matplotlib (`canvas_logs`, `canvas_cov`, `canvas_xpt`, `canvas_matrix`, `canvas_interp_qc`) y vista de mapa (`web_map_view`).
+  - Se limpian en disco de `workspace_imports/` las carpetas residuales de sesiones anteriores no referenciadas por proyectos guardados en `projects/*.wellcurator.json` (`clean_unreferenced_workspace_imports`), evitando que ejecuciones pasadas reaparezcan o se mezclen al arrastrar nuevos archivos `.las`.
+  - Las visualizaciones (Pestaña 5) NO leen de forma pasiva residuos previos de `output/` al iniciar ni al actualizar si no hubo exportación en la sesión actual o apertura explícita de una carpeta `output/` desde Pestaña 6 (`6. Salidas`).
+- **Nueva Pestaña 4 dedicada: `4. Homogeneización de Profundidad (QC)`** (la app pasa a tener 6 pestañas: Importar -> Configurar/LLM -> Procesamiento LLM -> **Homogeneización Profundidad (QC)** -> Validación/Mapa/Logs -> Salidas):
+  - **Procedencia explícita de parámetros (`inspect_depth_grid_provenance`)**:
+    - Panel de resumen y tabla archivo por archivo (`.LAS`) detallando exactamente **de dónde se toma cada parámetro**: si `STEP` proviene del encabezado `~Well` (con conversión `FT -> M` x `0.3048` si aplica) o si se calcula como mediana $\Delta z$ de `~A` por venir `STEP = 0` en header (ajustado a paso estándar si aplica); así como el pozo/archivo de origen de `Global Start`, `Global Stop` y `Step Objetivo` y las reglas de interpolación sin extrapolación.
+  - **Control de Calidad Visual de Interpolación (`prepare_interpolation_qc_data` + `canvas_interp_qc`)**:
+    - Selector de pozo, curva y rango de profundidad de zoom (`Todo` / `Zoom Automático en zona con datos` / `Manual [Z_min, Z_max]`).
+    - Gráfico dual: panel izquierdo con perfil completo Crudo vs Homogeneizado (marcando zonas `NaN` fuera de rango medido sin extrapolación) y panel derecho con **zoom de alta resolución** mostrando muestras crudas individuales (`o`) frente a nodos interpolados en la grilla común (`+` / línea discontinua y grilla horizontal al `step` objetivo) junto a métricas cuantitativas (cantidad de muestras crudas vs grilla, % válidos, diferencia media en puntos coincidentes).
+  - Incluye allí mismo la configuración de modo/paso de grilla, selector de carpeta `output/` y botón **Confirmar y Exportar a output/**.
+
 ---
 
 ## 3. Requerimientos No Funcionales (RNF)

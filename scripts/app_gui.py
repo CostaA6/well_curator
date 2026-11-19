@@ -86,6 +86,7 @@ from scripts.llm_extractor import (
 from scripts.ui_controller import (
     WORKSPACE_IMPORTS_DIR,
     build_folium_well_map_html,
+    clean_unreferenced_workspace_imports,
     discover_well_sources,
     get_crs_details,
     inverse_project_to_wgs84,
@@ -104,6 +105,8 @@ from scripts.well_exporter import (
     WellExportSummary,
     compute_batch_depth_grid_bounds,
     export_well_to_output,
+    inspect_depth_grid_provenance,
+    prepare_interpolation_qc_data,
 )
 
 try:
@@ -706,12 +709,20 @@ class ExportWorker(QThread):
 class WellCuratorMainWindow(QMainWindow):
     """Ventana principal de Well Curator Studio (Spec 004)."""
 
-    def __init__(self, initial_output_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        initial_output_dir: Optional[Path] = None,
+        clean_staging_on_startup: bool = True,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("Well Curator Studio — Curado de Perfiles .LAS")
         self.resize(1380, 860)
 
+        if clean_staging_on_startup:
+            clean_unreferenced_workspace_imports(PROJECT_ROOT / "projects", WORKSPACE_IMPORTS_DIR)
+
         self.output_dir = initial_output_dir or (PROJECT_ROOT / "output")
+        self._has_session_output: bool = False
         self.current_project_path: Optional[Path] = None
         self.project_manual_wells: List[Dict[str, object]] = []
         self.batch_extra_roots: List[Path] = []
@@ -796,6 +807,7 @@ class WellCuratorMainWindow(QMainWindow):
         self._build_tab1_import()
         self._build_tab2_config()
         self._build_tab3_process_review()
+        self._build_tab4_homogenization()
         self._build_tab4_validation_viz()
         self._build_tab5_outputs()
 
@@ -1016,88 +1028,25 @@ class WellCuratorMainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        # Barra de acciones
+        # Barra de acciones (Pestaña 3 enfocada en Extracción LLM y Revisión de Metadatos)
         bar = QHBoxLayout()
         self.btn_run_llm = QPushButton("1. Ejecutar Extracción con LLM")
         self.btn_run_llm.setObjectName("PrimaryBtn")
         self.btn_run_llm.clicked.connect(self._start_llm_extraction)
 
-        self.btn_export_output = QPushButton("2. Confirmar Revisión y Exportar a output/")
-        self.btn_export_output.setObjectName("SuccessBtn")
-        self.btn_export_output.clicked.connect(self._start_export)
+        self.btn_goto_homog = QPushButton("2. Ir a Homogeneización de Profundidad (QC) →")
+        self.btn_goto_homog.setObjectName("SuccessBtn")
+        self.btn_goto_homog.clicked.connect(lambda: self.tabs.setCurrentIndex(3))
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         self.lbl_progress = QLabel("Listo.")
 
         bar.addWidget(self.btn_run_llm)
-        bar.addWidget(self.btn_export_output)
+        bar.addWidget(self.btn_goto_homog)
         bar.addWidget(self.progress_bar, 1)
         bar.addWidget(self.lbl_progress)
         layout.addLayout(bar)
-
-        # Panel de regularización de grilla común pre-exportación y carpeta de salida (RF-9)
-        grp_pre_export = QGroupBox("Regularización de Grilla Común (Pre-Exportación) y Carpeta de Salida")
-        pre_layout = QVBoxLayout(grp_pre_export)
-        pre_layout.setContentsMargins(10, 6, 10, 6)
-        pre_layout.setSpacing(6)
-
-        grid_row = QHBoxLayout()
-        grid_row.addWidget(QLabel("Modo Grilla:"))
-        self.cmb_grid_mode = QComboBox()
-        self.cmb_grid_mode.addItem("Por pozo (paso más chico individual)", "per_well")
-        self.cmb_grid_mode.addItem("Mismo Paso Común (interpola al paso elegido)", "common_step")
-        self.cmb_grid_mode.addItem("Grilla Global Idéntica (mismo Start, Stop y Step)", "global_grid")
-        self.cmb_grid_mode.currentIndexChanged.connect(self._on_grid_option_changed)
-        grid_row.addWidget(self.cmb_grid_mode, 2)
-
-        grid_row.addWidget(QLabel("Paso [m]:"))
-        self.cmb_grid_step_preset = QComboBox()
-        self.cmb_grid_step_preset.addItem("Auto (menor del lote)", None)
-        self.cmb_grid_step_preset.addItem("0.0762 m (1/4 ft)", 0.0762)
-        self.cmb_grid_step_preset.addItem("0.1000 m (10 cm)", 0.10)
-        self.cmb_grid_step_preset.addItem("0.1524 m (1/2 ft)", 0.1524)
-        self.cmb_grid_step_preset.addItem("0.2000 m (20 cm)", 0.20)
-        self.cmb_grid_step_preset.addItem("0.3048 m (1 ft)", 0.3048)
-        self.cmb_grid_step_preset.addItem("0.5000 m", 0.50)
-        self.cmb_grid_step_preset.addItem("1.0000 m", 1.00)
-        self.cmb_grid_step_preset.addItem("Personalizado...", "custom")
-        self.cmb_grid_step_preset.currentIndexChanged.connect(self._on_grid_option_changed)
-        grid_row.addWidget(self.cmb_grid_step_preset, 1)
-
-        self.spn_custom_grid_step = QDoubleSpinBox()
-        self.spn_custom_grid_step.setRange(0.0050, 50.0)
-        self.spn_custom_grid_step.setDecimals(4)
-        self.spn_custom_grid_step.setSingleStep(0.05)
-        self.spn_custom_grid_step.setValue(0.1524)
-        self.spn_custom_grid_step.setSuffix(" m")
-        self.spn_custom_grid_step.setEnabled(False)
-        self.spn_custom_grid_step.valueChanged.connect(self._update_depth_grid_preview)
-        grid_row.addWidget(self.spn_custom_grid_step)
-
-        self.btn_preview_grid = QPushButton("Calcular Grilla")
-        self.btn_preview_grid.clicked.connect(self._update_depth_grid_preview)
-        grid_row.addWidget(self.btn_preview_grid)
-        pre_layout.addLayout(grid_row)
-
-        out_pre_row = QHBoxLayout()
-        self.lbl_grid_preview = QLabel("Grilla: Por pozo (paso nativo más chico de cada pozo, sin extrapolar).")
-        self.lbl_grid_preview.setStyleSheet("color: #334155; font-size: 8.5pt;")
-        out_pre_row.addWidget(self.lbl_grid_preview, 1)
-
-        out_pre_row.addWidget(QLabel("Exportar en:"))
-        self.txt_export_output_dir = QLineEdit(str(self.output_dir))
-        self.txt_export_output_dir.setMinimumWidth(260)
-        self.txt_export_output_dir.editingFinished.connect(
-            lambda: self.set_output_dir(Path(self.txt_export_output_dir.text().strip() or str(PROJECT_ROOT / "output")))
-        )
-        btn_export_out_browse = QPushButton("Elegir Carpeta...")
-        btn_export_out_browse.clicked.connect(self._browse_output_dir)
-        out_pre_row.addWidget(self.txt_export_output_dir)
-        out_pre_row.addWidget(btn_export_out_browse)
-        pre_layout.addLayout(out_pre_row)
-
-        layout.addWidget(grp_pre_export)
 
         main_split = QSplitter(Qt.Orientation.Vertical)
 
@@ -1163,7 +1112,172 @@ class WellCuratorMainWindow(QMainWindow):
         self.tabs.addTab(tab, "3. Procesamiento y Reporte LLM")
 
     # ------------------------------------------------------------------
-    # PESTAÑA 4: VALIDACIÓN, MAPA GEOGRÁFICO Y VISOR DE LOGS
+    # PESTAÑA 4: HOMOGENEIZACIÓN DE PROFUNDIDAD, PROCEDENCIA Y QC VISUAL
+    # ------------------------------------------------------------------
+    def _build_tab4_homogenization(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        # Panel superior: Configuración de Grilla, Carpeta Salida y Exportar
+        grp_cfg = QGroupBox("Parámetros de Grilla Común, Carpeta de Salida y Exportación")
+        cfg_l = QVBoxLayout(grp_cfg)
+        cfg_l.setContentsMargins(10, 8, 10, 8)
+        cfg_l.setSpacing(6)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Modo Grilla:"))
+        self.cmb_grid_mode = QComboBox()
+        self.cmb_grid_mode.addItem("Por pozo (paso más chico individual)", "per_well")
+        self.cmb_grid_mode.addItem("Mismo Paso Común (interpola al paso elegido)", "common_step")
+        self.cmb_grid_mode.addItem("Grilla Global Idéntica (mismo Start, Stop y Step)", "global_grid")
+        self.cmb_grid_mode.currentIndexChanged.connect(self._on_grid_option_changed)
+        row1.addWidget(self.cmb_grid_mode, 2)
+
+        row1.addWidget(QLabel("Paso [m]:"))
+        self.cmb_grid_step_preset = QComboBox()
+        self.cmb_grid_step_preset.addItem("Auto (menor del lote)", None)
+        self.cmb_grid_step_preset.addItem("0.0762 m (1/4 ft)", 0.0762)
+        self.cmb_grid_step_preset.addItem("0.1000 m (10 cm)", 0.10)
+        self.cmb_grid_step_preset.addItem("0.1524 m (1/2 ft)", 0.1524)
+        self.cmb_grid_step_preset.addItem("0.2000 m (20 cm)", 0.20)
+        self.cmb_grid_step_preset.addItem("0.3048 m (1 ft)", 0.3048)
+        self.cmb_grid_step_preset.addItem("0.5000 m", 0.50)
+        self.cmb_grid_step_preset.addItem("1.0000 m", 1.00)
+        self.cmb_grid_step_preset.addItem("Personalizado...", "custom")
+        self.cmb_grid_step_preset.currentIndexChanged.connect(self._on_grid_option_changed)
+        row1.addWidget(self.cmb_grid_step_preset, 1)
+
+        self.spn_custom_grid_step = QDoubleSpinBox()
+        self.spn_custom_grid_step.setRange(0.0050, 50.0)
+        self.spn_custom_grid_step.setDecimals(4)
+        self.spn_custom_grid_step.setSingleStep(0.05)
+        self.spn_custom_grid_step.setValue(0.1524)
+        self.spn_custom_grid_step.setSuffix(" m")
+        self.spn_custom_grid_step.setEnabled(False)
+        self.spn_custom_grid_step.valueChanged.connect(self._on_grid_option_changed)
+        row1.addWidget(self.spn_custom_grid_step)
+
+        self.btn_preview_grid = QPushButton("Calcular Grilla y Procedencia")
+        self.btn_preview_grid.setObjectName("PrimaryBtn")
+        self.btn_preview_grid.clicked.connect(self._refresh_homogenization_tab)
+        row1.addWidget(self.btn_preview_grid)
+        cfg_l.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self.lbl_grid_preview = QLabel("Grilla: Por pozo (paso nativo más chico de cada pozo, sin extrapolar).")
+        self.lbl_grid_preview.setStyleSheet("color: #1E293B; font-weight: bold; font-size: 8.5pt;")
+        row2.addWidget(self.lbl_grid_preview, 1)
+
+        row2.addWidget(QLabel("Exportar en:"))
+        self.txt_export_output_dir = QLineEdit(str(self.output_dir))
+        self.txt_export_output_dir.setMinimumWidth(250)
+        self.txt_export_output_dir.editingFinished.connect(
+            lambda: self.set_output_dir(
+                Path(self.txt_export_output_dir.text().strip() or str(PROJECT_ROOT / "output")),
+                mark_inspected=True,
+            )
+        )
+        btn_export_out_browse = QPushButton("Elegir Carpeta...")
+        btn_export_out_browse.clicked.connect(self._browse_output_dir)
+
+        self.btn_export_output = QPushButton("3. Confirmar Revisión y Exportar a output/")
+        self.btn_export_output.setObjectName("SuccessBtn")
+        self.btn_export_output.clicked.connect(self._start_export)
+
+        row2.addWidget(self.txt_export_output_dir)
+        row2.addWidget(btn_export_out_browse)
+        row2.addWidget(self.btn_export_output)
+        cfg_l.addLayout(row2)
+        layout.addWidget(grp_cfg)
+
+        # Splitter principal: Izquierda = Procedencia de parámetros | Derecha = QC Visual de Interpolación
+        hsplit = QSplitter(Qt.Orientation.Horizontal)
+
+        grp_prov = QGroupBox("Procedencia de Parámetros (¿De dónde se toma STEP, Start, Stop y Unidades?)")
+        prov_l = QVBoxLayout(grp_prov)
+        self.lbl_grid_provenance = QLabel("Pre-escaneá o procesá pozos para ver el origen exacto de cada parámetro.")
+        self.lbl_grid_provenance.setWordWrap(True)
+        self.lbl_grid_provenance.setStyleSheet(
+            "background: #EFF6FF; color: #1E3A8A; border: 1px solid #93C5FD; "
+            "border-radius: 5px; padding: 8px; font-size: 8.5pt;"
+        )
+        prov_l.addWidget(self.lbl_grid_provenance)
+
+        self.tbl_grid_provenance = QTableWidget(0, 8)
+        self.tbl_grid_provenance.setHorizontalHeaderLabels([
+            "Pozo", "Archivo .LAS", "Unid.", "Start [m]", "Stop [m]",
+            "STEP Hdr", "Efectivo [m]", "Origen / Cálculo del Paso"
+        ])
+        hdr_prov = self.tbl_grid_provenance.horizontalHeader()
+        hdr_prov.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr_prov.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        for col_i, col_w in enumerate((95, 130, 50, 62, 62, 65, 72)):
+            self.tbl_grid_provenance.setColumnWidth(col_i, col_w)
+        prov_l.addWidget(self.tbl_grid_provenance, 1)
+
+        grp_qc = QGroupBox("Control de Calidad Visual de Interpolación (Crudo vs Grilla Homogeneizada)")
+        qc_l = QVBoxLayout(grp_qc)
+
+        qc_bar = QHBoxLayout()
+        qc_bar.addWidget(QLabel("Pozo:"))
+        self.cmb_qc_well = QComboBox()
+        self.cmb_qc_well.currentTextChanged.connect(self._on_qc_well_changed)
+        qc_bar.addWidget(self.cmb_qc_well, 1)
+
+        qc_bar.addWidget(QLabel("Curva:"))
+        self.cmb_qc_curve = QComboBox()
+        self.cmb_qc_curve.currentTextChanged.connect(self._plot_interpolation_qc)
+        qc_bar.addWidget(self.cmb_qc_curve, 1)
+
+        qc_bar.addWidget(QLabel("Zoom:"))
+        self.cmb_qc_zoom_mode = QComboBox()
+        self.cmb_qc_zoom_mode.addItem("Auto (~25 m con datos)", "auto")
+        self.cmb_qc_zoom_mode.addItem("Pozo completo", "full")
+        self.cmb_qc_zoom_mode.addItem("Manual [Z min..Z max]", "manual")
+        self.cmb_qc_zoom_mode.currentIndexChanged.connect(self._on_qc_zoom_mode_changed)
+        qc_bar.addWidget(self.cmb_qc_zoom_mode)
+
+        self.spn_qc_zmin = QDoubleSpinBox()
+        self.spn_qc_zmin.setRange(-1000.0, 20000.0)
+        self.spn_qc_zmin.setDecimals(1)
+        self.spn_qc_zmin.setValue(400.0)
+        self.spn_qc_zmin.setEnabled(False)
+        qc_bar.addWidget(self.spn_qc_zmin)
+
+        self.spn_qc_zmax = QDoubleSpinBox()
+        self.spn_qc_zmax.setRange(-1000.0, 20000.0)
+        self.spn_qc_zmax.setDecimals(1)
+        self.spn_qc_zmax.setValue(425.0)
+        self.spn_qc_zmax.setEnabled(False)
+        qc_bar.addWidget(self.spn_qc_zmax)
+
+        btn_refresh_qc = QPushButton("Actualizar QC")
+        btn_refresh_qc.clicked.connect(self._plot_interpolation_qc)
+        qc_bar.addWidget(btn_refresh_qc)
+        qc_l.addLayout(qc_bar)
+
+        self.lbl_qc_metrics = QLabel("Seleccioná pozo y curva para inspeccionar la interpolación punto a punto.")
+        self.lbl_qc_metrics.setWordWrap(True)
+        self.lbl_qc_metrics.setStyleSheet(
+            "background: #F8FAFC; color: #334155; border: 1px solid #CBD5E1; "
+            "border-radius: 4px; padding: 5px; font-size: 8.5pt;"
+        )
+        qc_l.addWidget(self.lbl_qc_metrics)
+
+        self.canvas_interp_qc = MplCanvasWidget(figsize=(8.8, 5.6))
+        qc_l.addWidget(self.canvas_interp_qc, 1)
+
+        hsplit.addWidget(grp_prov)
+        hsplit.addWidget(grp_qc)
+        hsplit.setSizes([520, 760])
+        layout.addWidget(hsplit, 1)
+
+        self.tabs.addTab(tab, "4. Homogeneización de Profundidad (QC)")
+
+    # ------------------------------------------------------------------
+    # PESTAÑA 5: VALIDACIÓN, MAPA GEOGRÁFICO Y VISOR DE LOGS
     # ------------------------------------------------------------------
     def _build_tab4_validation_viz(self) -> None:
         tab = QWidget()
@@ -1259,10 +1373,10 @@ class WellCuratorMainWindow(QMainWindow):
         mat_layout.addWidget(self.canvas_matrix)
         self.subtabs_viz.addTab(mat_tab, "Matriz Maestra Excel (yes/no)")
 
-        self.tabs.addTab(tab, "4. Validación, Mapa y Logs")
+        self.tabs.addTab(tab, "5. Validación, Mapa y Logs")
 
     # ------------------------------------------------------------------
-    # PESTAÑA 5: SALIDAS Y EXPLORADOR DE OUTPUT/
+    # PESTAÑA 6: SALIDAS Y EXPLORADOR DE OUTPUT/
     # ------------------------------------------------------------------
     def _build_tab5_outputs(self) -> None:
         tab = QWidget()
@@ -1273,19 +1387,25 @@ class WellCuratorMainWindow(QMainWindow):
         dir_row.addWidget(QLabel("Carpeta output/ seleccionada:"))
         self.txt_tab5_output_dir = QLineEdit(str(self.output_dir))
         self.txt_tab5_output_dir.editingFinished.connect(
-            lambda: self.set_output_dir(Path(self.txt_tab5_output_dir.text().strip() or str(PROJECT_ROOT / "output")))
+            lambda: self.set_output_dir(
+                Path(self.txt_tab5_output_dir.text().strip() or str(PROJECT_ROOT / "output")),
+                mark_inspected=True,
+            )
         )
         btn_pick_tab5_out = QPushButton("Seleccionar Carpeta output/...")
         btn_pick_tab5_out.clicked.connect(self._browse_output_dir)
+        btn_clear_out = QPushButton("Vaciar Carpeta output/ Actual")
+        btn_clear_out.clicked.connect(self._clear_current_output_dir)
         dir_row.addWidget(self.txt_tab5_output_dir, 1)
         dir_row.addWidget(btn_pick_tab5_out)
+        dir_row.addWidget(btn_clear_out)
         layout.addLayout(dir_row)
 
         top_row = QHBoxLayout()
         self.lbl_output_summary = QLabel("Sin inventario cargado.")
         self.lbl_output_summary.setStyleSheet("font-weight: bold;")
-        btn_reload_out = QPushButton("Refrescar output/")
-        btn_reload_out.clicked.connect(self._refresh_output_tab)
+        btn_reload_out = QPushButton("Refrescar / Leer output/")
+        btn_reload_out.clicked.connect(self._manual_refresh_output_tab)
         btn_open_out = QPushButton("Abrir Carpeta output/")
         btn_open_out.setObjectName("PrimaryBtn")
         btn_open_out.clicked.connect(self._open_output_folder)
@@ -1323,7 +1443,7 @@ class WellCuratorMainWindow(QMainWindow):
         self.txt_out_errors.setReadOnly(True)
         out_tabs.addTab(self.txt_out_errors, "batch_errors.log")
 
-        self.tabs.addTab(tab, "5. Salidas (output/)")
+        self.tabs.addTab(tab, "6. Salidas (output/)")
 
     # ------------------------------------------------------------------
     # LÓGICA DE PROYECTOS (VACÍO POR DEFECTO, GUARDAR / ABRIR) Y CRS
@@ -1339,6 +1459,7 @@ class WellCuratorMainWindow(QMainWindow):
         self.manual_edited_wells = set()
         self.per_curve_overrides = {}
         self.export_summaries = {}
+        self._has_session_output = False
 
         self.chk_include_input.blockSignals(True)
         self.chk_include_imports.blockSignals(True)
@@ -1353,10 +1474,17 @@ class WellCuratorMainWindow(QMainWindow):
         self.tbl_review.setRowCount(0)
         self.tbl_repeated_curves.setRowCount(0)
         self.tbl_map_names.setRowCount(0)
+        self.tbl_grid_provenance.setRowCount(0)
         self.txt_llm_report.clear()
         self.txt_console.clear()
         self.cmb_log_well.clear()
         self.lst_log_curves.clear()
+        self.cmb_qc_well.blockSignals(True)
+        self.cmb_qc_well.clear()
+        self.cmb_qc_well.blockSignals(False)
+        self.cmb_qc_curve.blockSignals(True)
+        self.cmb_qc_curve.clear()
+        self.cmb_qc_curve.blockSignals(False)
         self.progress_bar.setValue(0)
         self.lbl_progress.setText("Proyecto nuevo vacío. Arrastrá pozos o abrí un proyecto.")
 
@@ -1373,9 +1501,47 @@ class WellCuratorMainWindow(QMainWindow):
         self.cmb_grid_mode.setCurrentIndex(0)
         self.cmb_grid_step_preset.setCurrentIndex(0)
         self.spn_custom_grid_step.setEnabled(False)
+        self.lbl_grid_provenance.setText(
+            "Pre-escaneá o procesá pozos para ver el origen exacto de STEP, Start, Stop y unidades."
+        )
+        self.lbl_qc_metrics.setText("Seleccioná pozo y curva para inspeccionar la interpolación punto a punto.")
+        self._clear_all_canvases_and_map()
         self._update_depth_grid_preview()
 
         self._on_config_changed()
+
+    def _clear_all_canvases_and_map(self) -> None:
+        """Limpia todos los lienzos Matplotlib y la vista de mapa para no arrastrar visualizaciones previas."""
+        empty_msgs = [
+            ("canvas_logs", "Sin registros cargados en la sesión actual."),
+            ("canvas_coverage", "Sin cobertura cargada en la sesión actual."),
+            ("canvas_xpt", "Sin estaciones XPT en la sesión actual."),
+            ("canvas_matrix", "Sin matriz exportada en la sesión actual."),
+            ("canvas_interp_qc", "Pre-escaneá o seleccioná un pozo en Pestaña 4 para visualizar el QC de interpolación."),
+        ]
+        for attr, msg in empty_msgs:
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                fig = widget.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, msg, ha="center", va="center", color="#64748B", fontsize=10)
+                ax.set_axis_off()
+                widget.canvas.draw_idle()
+
+        if self.web_map_view is not None:
+            self.web_map_view.setHtml(
+                "<html><body style='font-family:Segoe UI,sans-serif;display:flex;"
+                "align-items:center;justify-content:center;height:100%;color:#64748B;background:#F8FAFC;'>"
+                "<div>Sin pozos georreferenciados en la sesión actual.</div></body></html>"
+            )
+        elif hasattr(self, "canvas_map_fallback"):
+            fig = self.canvas_map_fallback.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, "Sin pozos georreferenciados en la sesión actual.", ha="center", va="center", color="#64748B")
+            ax.set_axis_off()
+            self.canvas_map_fallback.canvas.draw_idle()
 
     def _new_project_clicked(self) -> None:
         self._init_empty_project()
@@ -1546,7 +1712,10 @@ class WellCuratorMainWindow(QMainWindow):
             self._populate_review_table()
             self.tbl_review.selectRow(0)
             self._refresh_all_visualizations()
-        self._refresh_output_tab()
+        if out_str and (self.output_dir / "well_metadata.xlsx").exists():
+            self._has_session_output = True
+            self._refresh_output_tab()
+        self._refresh_homogenization_tab()
 
         self.lbl_project_name.setText(f"Proyecto: {project_path.name}")
         self.lbl_progress.setText(f"Proyecto '{project_path.name}' cargado ({len(self.discovered_wells)} pozos).")
@@ -1706,9 +1875,11 @@ class WellCuratorMainWindow(QMainWindow):
             ]
             self._refresh_discovered_wells()
 
-    def set_output_dir(self, target_dir: Path, refresh_ui: bool = True) -> None:
-        """Sincroniza la carpeta de salida en Pestañas 2, 3 y 5, el badge superior y las vistas."""
+    def set_output_dir(self, target_dir: Path, refresh_ui: bool = True, mark_inspected: bool = False) -> None:
+        """Sincroniza la carpeta de salida en Pestañas 2, 4 y 6, el badge superior y las vistas."""
         self.output_dir = Path(target_dir)
+        if mark_inspected:
+            self._has_session_output = True
         path_txt = str(self.output_dir)
         for widget_name in ("txt_output_dir", "txt_export_output_dir", "txt_tab5_output_dir"):
             widget = getattr(self, widget_name, None)
@@ -1719,13 +1890,13 @@ class WellCuratorMainWindow(QMainWindow):
         self.badge_output.setText(f"Salida: {self.output_dir.name}/")
         if refresh_ui:
             self._refresh_output_tab()
-            if not self.llm_wells:
+            if not self.llm_wells and self._has_session_output:
                 self._refresh_all_visualizations()
 
     def _browse_output_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Seleccionar carpeta output/", str(self.output_dir))
         if folder:
-            self.set_output_dir(Path(folder), refresh_ui=True)
+            self.set_output_dir(Path(folder), refresh_ui=True, mark_inspected=True)
 
     def _selected_target_grid_step(self) -> Optional[float]:
         preset = self.cmb_grid_step_preset.currentData()
@@ -1763,7 +1934,7 @@ class WellCuratorMainWindow(QMainWindow):
     def _on_grid_option_changed(self) -> None:
         is_custom = self.cmb_grid_step_preset.currentData() == "custom"
         self.spn_custom_grid_step.setEnabled(is_custom)
-        self._update_depth_grid_preview()
+        self._refresh_homogenization_tab()
 
     def _update_depth_grid_preview(self) -> None:
         mode, t_step, t_start, t_stop, bounds = self.get_export_depth_grid_spec()
@@ -1789,6 +1960,222 @@ class WellCuratorMainWindow(QMainWindow):
                 f"Grilla Global Idéntica: [{t_start:.2f} .. {t_stop:.2f}] m | "
                 f"step={t_step:.4g} m | {int(bounds['rows']):,} filas idénticas/pozo (NaN fuera de rango)."
             )
+
+    def _refresh_homogenization_tab(self) -> None:
+        """Actualiza la tabla de procedencia de parámetros y el visor QC visual de interpolación."""
+        self._update_depth_grid_preview()
+        source_dict = self.llm_wells or self.prescanned_wells
+        items = list(source_dict.values())
+
+        if not items:
+            self.tbl_grid_provenance.setRowCount(0)
+            self.lbl_grid_provenance.setText(
+                "Pre-escaneá o procesá pozos para ver el origen exacto de STEP, Start, Stop y unidades."
+            )
+            self.cmb_qc_well.blockSignals(True)
+            self.cmb_qc_well.clear()
+            self.cmb_qc_well.blockSignals(False)
+            self.cmb_qc_curve.blockSignals(True)
+            self.cmb_qc_curve.clear()
+            self.cmb_qc_curve.blockSignals(False)
+            return
+
+        desired_step = self._selected_target_grid_step()
+        mode = str(self.cmb_grid_mode.currentData() or "per_well")
+        try:
+            prov = inspect_depth_grid_provenance(items, target_step=desired_step)
+        except ValueError as exc:
+            self.tbl_grid_provenance.setRowCount(0)
+            self.lbl_grid_provenance.setText(f"Sin datos de profundidad válidos: {exc}")
+            return
+
+        file_rows = prov["file_rows"]
+        self.tbl_grid_provenance.setRowCount(len(file_rows))
+        for r_idx, row in enumerate(file_rows):
+            vals = [
+                str(row["well_name"]),
+                str(row["file_name"]),
+                str(row["original_unit"]),
+                f"{row['data_min_depth']:.4f}",
+                f"{row['data_max_depth']:.4f}",
+                str(row["header_step_raw"]),
+                f"{row['effective_step']:.4g}",
+                str(row["step_origin"]),
+            ]
+            for c_idx, txt in enumerate(vals):
+                it = QTableWidgetItem(txt)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.tbl_grid_provenance.setItem(r_idx, c_idx, it)
+
+        step_rule = (
+            "Cada pozo conserva su menor paso efectivo propio"
+            if mode == "per_well"
+            else prov["chosen_step_origin"]
+        )
+        range_rule = (
+            "Global idéntico (Start mínimo al Stop máximo del lote)"
+            if mode == "global_grid"
+            else "Individual por pozo [Start_pozo, Stop_pozo]"
+        )
+        self.lbl_grid_provenance.setText(
+            f"<b>Origen del Paso:</b> {step_rule}<br>"
+            f"<b>Rango aplicado ({mode}):</b> {range_rule}<br>"
+            f"<b>Start del lote:</b> {prov['start_origin']} &nbsp;|&nbsp; "
+            f"<b>Stop del lote:</b> {prov['stop_origin']}<br>"
+            f"<b>Menor paso nativo del lote:</b> {prov['min_step_origin']}<br>"
+            f"<b>Método:</b> Interpolación lineal (<code>numpy.interp</code>) sin extrapolación en extremos; "
+            f"brechas internas &gt; 2.5 × paso nativo preservadas como <code>NaN</code>."
+        )
+
+        # Actualizar selector de pozos para QC visual
+        prev_well = self.cmb_qc_well.currentText()
+        self.cmb_qc_well.blockSignals(True)
+        self.cmb_qc_well.clear()
+        self.cmb_qc_well.addItems(sorted(source_dict.keys()))
+        if prev_well and prev_well in source_dict:
+            self.cmb_qc_well.setCurrentText(prev_well)
+        self.cmb_qc_well.blockSignals(False)
+        self._on_qc_well_changed(self.cmb_qc_well.currentText())
+
+    def _on_qc_well_changed(self, fname: str) -> None:
+        source_dict = self.llm_wells or self.prescanned_wells
+        prev_curve = self.cmb_qc_curve.currentText()
+        self.cmb_qc_curve.blockSignals(True)
+        self.cmb_qc_curve.clear()
+        if fname in source_dict:
+            res, _ = source_dict[fname]
+            curves = sorted(res.all_assigned_depth_curves)
+            preferred = ["GR", "SP", "CAL", "HCAL", "DT", "NEU", "RHOZ", "ZDEN", "M2R6", "AHT90"]
+            ordered = [c for c in preferred if c in curves] + [c for c in curves if c not in preferred]
+            self.cmb_qc_curve.addItems(ordered)
+            if prev_curve and prev_curve in ordered:
+                self.cmb_qc_curve.setCurrentText(prev_curve)
+        self.cmb_qc_curve.blockSignals(False)
+        self._plot_interpolation_qc()
+
+    def _on_qc_zoom_mode_changed(self) -> None:
+        is_manual = self.cmb_qc_zoom_mode.currentData() == "manual"
+        self.spn_qc_zmin.setEnabled(is_manual)
+        self.spn_qc_zmax.setEnabled(is_manual)
+        self._plot_interpolation_qc()
+
+    def _plot_interpolation_qc(self) -> None:
+        source_dict = self.llm_wells or self.prescanned_wells
+        fname = self.cmb_qc_well.currentText()
+        curve = self.cmb_qc_curve.currentText()
+        if not fname or fname not in source_dict or not curve:
+            return
+        res, dfs = source_dict[fname]
+        mode, t_step, t_start, t_stop, _bounds = self.get_export_depth_grid_spec()
+        rep_global = self.cmb_repeat_strategy.currentData() or "keep_all"
+        per_curve = self.per_curve_overrides.get(fname, {})
+
+        try:
+            qc = prepare_interpolation_qc_data(
+                well=res,
+                well_dfs=dfs,
+                curve_name=curve,
+                repeat_strategy=rep_global,
+                per_curve_repeat_strategy=per_curve,
+                target_grid_step=t_step,
+                target_grid_start=t_start,
+                target_grid_stop=t_stop,
+            )
+        except Exception as exc:
+            self.lbl_qc_metrics.setText(f"No se pudo generar QC de {fname}/{curve}: {exc}")
+            return
+
+        mae_txt = f"{qc['mae_reinterpolation']:.4g}" if qc["mae_reinterpolation"] is not None else "N/D"
+        raw_steps_txt = ", ".join(f"{st:.4g} m" for st in sorted(set(qc["raw_eff_steps"]))) or "N/D"
+        self.lbl_qc_metrics.setText(
+            f"<b>{qc['well_name']} — {qc['curve_name']} [{qc['unit']}]</b> | "
+            f"Paso nativo: {raw_steps_txt} → Grilla ({mode}): <b>{qc['grid_step']:.4g} m</b> | "
+            f"Muestras crudas: {qc['raw_samples']:,} | Filas grilla: {qc['grid_total_rows']:,} "
+            f"(válidas: {qc['grid_valid_rows']:,}, NaN fuera de rango/brechas: {qc['grid_nan_rows']:,}) | "
+            f"Dif. media re-muestreo: {mae_txt}"
+        )
+
+        zoom_mode = self.cmb_qc_zoom_mode.currentData() or "auto"
+        if zoom_mode == "full":
+            zmin, zmax = float(qc["grid_start"]), float(qc["grid_stop"])
+        elif zoom_mode == "manual":
+            zmin = min(float(self.spn_qc_zmin.value()), float(self.spn_qc_zmax.value()))
+            zmax = max(float(self.spn_qc_zmin.value()), float(self.spn_qc_zmax.value()))
+            if zmax - zmin < 0.5:
+                zmax = zmin + 10.0
+        else:
+            zmin, zmax = float(qc["zoom_start"]), float(qc["zoom_stop"])
+            self.spn_qc_zmin.blockSignals(True)
+            self.spn_qc_zmax.blockSignals(True)
+            self.spn_qc_zmin.setValue(zmin)
+            self.spn_qc_zmax.setValue(zmax)
+            self.spn_qc_zmin.blockSignals(False)
+            self.spn_qc_zmax.blockSignals(False)
+
+        fig = self.canvas_interp_qc.figure
+        fig.clear()
+        ax_full, ax_zoom = fig.subplots(1, 2)
+
+        gd = qc["grid_depths"]
+        gv = qc["interp_values"]
+
+        # Panel 1: Vista completa del pozo (Crudo vs Grilla Homogeneizada + sombreado NaN)
+        for rs in qc["raw_series"]:
+            ax_full.plot(rs["values"], rs["depth"], color="#2563EB", lw=1.2, alpha=0.65, label=f"Crudo ({rs['label'][:18]})")
+        ax_full.plot(gv, gd, color="#DC2626", ls="--", lw=1.0, label=f"Homogeneizada ({qc['grid_step']:.4g} m)")
+
+        nan_mask = np.isnan(gv)
+        if np.any(nan_mask) and np.any(~nan_mask):
+            valid_idx = np.where(~nan_mask)[0]
+            first_v, last_v = gd[valid_idx[0]], gd[valid_idx[-1]]
+            if first_v > gd[0]:
+                ax_full.axhspan(gd[0], first_v, color="#F1F5F9", alpha=0.85)
+            if last_v < gd[-1]:
+                ax_full.axhspan(last_v, gd[-1], color="#F1F5F9", alpha=0.85)
+
+        ax_full.axhspan(zmin, zmax, color="#FDE68A", alpha=0.35, label="Ventana Zoom")
+        ax_full.invert_yaxis()
+        ax_full.set_title(f"Perfil Completo ({qc['grid_start']:.1f}–{qc['grid_stop']:.1f} m)", fontsize=9.5, fontweight="bold")
+        ax_full.set_xlabel(f"{qc['curve_name']} [{qc['unit']}]")
+        ax_full.set_ylabel("Profundidad [m]")
+        ax_full.grid(True, linestyle=":")
+        ax_full.legend(loc="best", fontsize=7)
+
+        # Panel 2: Zoom punto a punto (muestras crudas 'o' vs nodos interpolados '+')
+        for rs in qc["raw_series"]:
+            m_r = (rs["depth"] >= zmin) & (rs["depth"] <= zmax)
+            if np.any(m_r):
+                ax_zoom.plot(
+                    rs["values"][m_r], rs["depth"][m_r],
+                    "o-", color="#2563EB", markersize=5.0, lw=1.1, alpha=0.75,
+                    label=f"Muestras crudas ({rs['eff_step']:.4g} m)",
+                )
+        m_g = (gd >= zmin) & (gd <= zmax)
+        if np.any(m_g):
+            ax_zoom.plot(
+                gv[m_g], gd[m_g],
+                "x--", color="#DC2626", markersize=5.5, lw=1.2,
+                label=f"Nodos grilla ({qc['grid_step']:.4g} m)",
+            )
+            # Dibujar líneas horizontales tenues por cada paso de grilla si hay <= 200 nodos en la ventana
+            gd_win = gd[m_g]
+            if len(gd_win) <= 200:
+                for gz in gd_win:
+                    ax_zoom.axhline(gz, color="#CBD5E1", lw=0.45, zorder=0)
+
+        ax_zoom.set_ylim(zmax, zmin)
+        ax_zoom.set_title(f"Zoom QC [{zmin:.1f} – {zmax:.1f} m]", fontsize=9.5, fontweight="bold")
+        ax_zoom.set_xlabel(f"{qc['curve_name']} [{qc['unit']}]")
+        ax_zoom.set_ylabel("Profundidad [m]")
+        ax_zoom.grid(True, axis="x", linestyle=":")
+        ax_zoom.legend(loc="best", fontsize=7)
+
+        fig.suptitle(f"QC de Interpolación — {qc['well_name']} ({qc['curve_name']})", fontsize=10, fontweight="bold")
+        try:
+            fig.tight_layout(rect=[0, 0, 1, 0.94])
+        except Exception:
+            pass
+        self.canvas_interp_qc.canvas.draw_idle()
 
     def _refresh_discovered_wells(self) -> None:
         roots: List[Tuple[str, Path]] = []
@@ -1858,7 +2245,7 @@ class WellCuratorMainWindow(QMainWindow):
                 self.tbl_import.setItem(r_idx, 4, QTableWidgetItem(f"Error: {exc}"))
         if entries:
             self._refresh_log_well_selector()
-        self._update_depth_grid_preview()
+        self._refresh_homogenization_tab()
 
     def _start_llm_extraction(self) -> None:
         entries = self._selected_well_entries()
@@ -1904,7 +2291,7 @@ class WellCuratorMainWindow(QMainWindow):
         self.lbl_progress.setText(f"Extracción completa ({len(self.llm_wells)} listos, {len(failed)} errores).")
         if self.tbl_review.rowCount() > 0:
             self.tbl_review.selectRow(0)
-        self._update_depth_grid_preview()
+        self._refresh_homogenization_tab()
         self._refresh_all_visualizations()
 
     def _populate_review_table(self) -> None:
@@ -2110,6 +2497,7 @@ class WellCuratorMainWindow(QMainWindow):
         self._export_worker.start()
 
     def _on_export_finished(self, summaries: List[WellExportSummary]) -> None:
+        self._has_session_output = True
         self.btn_run_llm.setEnabled(True)
         self.btn_export_output.setEnabled(True)
         self.lbl_progress.setText(f"Exportados {len(summaries)} pozos a {self.output_dir.name}/.")
@@ -2117,7 +2505,7 @@ class WellCuratorMainWindow(QMainWindow):
         self._refresh_output_tab()
 
     # ------------------------------------------------------------------
-    # VISUALIZACIÓN Y MAPA (PESTAÑA 4)
+    # VISUALIZACIÓN Y MAPA (PESTAÑA 5)
     # ------------------------------------------------------------------
     def _collect_map_records(self) -> List[Dict[str, object]]:
         records: List[Dict[str, object]] = []
@@ -2136,7 +2524,7 @@ class WellCuratorMainWindow(QMainWindow):
                     "grid_step": ws.grid_step if ws else "N/D",
                     "curves_count": len(ws.exported_depth_curves) if ws else len(res.unique_depth_curves),
                 })
-        else:
+        elif self._has_session_output:
             inv = load_output_inventory(self.output_dir)
             for c in inv["cache_records"]:
                 meta = c.get("metadata", {})
@@ -2255,7 +2643,8 @@ class WellCuratorMainWindow(QMainWindow):
 
         wname = str((res.llm_metadata or {}).get("nombre_pozo") or fname)
         csv_cand = self.output_dir / "wells" / f"{wname}_selected.csv"
-        tracks = prepare_well_log_tracks(res, dfs, csv_cand if csv_cand.exists() else None, selected, max_tracks=6)
+        csv_to_use = csv_cand if (self._has_session_output and csv_cand.exists()) else None
+        tracks = prepare_well_log_tracks(res, dfs, csv_to_use, selected, max_tracks=6)
 
         fig = self.canvas_logs.figure
         fig.clear()
@@ -2319,7 +2708,7 @@ class WellCuratorMainWindow(QMainWindow):
         fig_x = self.canvas_xpt.figure
         fig_x.clear()
         ax_x = fig_x.add_subplot(111)
-        if xpt_csv.exists():
+        if self._has_session_output and xpt_csv.exists():
             df_x = pd.read_csv(xpt_csv)
             p_col = "CP_SAP_final" if "CP_SAP_final" in df_x.columns and df_x["CP_SAP_final"].notna().any() else "CP_HYD_final"
             if p_col in df_x.columns:
@@ -2332,7 +2721,7 @@ class WellCuratorMainWindow(QMainWindow):
                 ax_x.grid(True, linestyle=":")
                 ax_x.legend(fontsize=8)
         else:
-            ax_x.text(0.5, 0.5, "Sin estaciones XPT exportadas", ha="center", va="center")
+            ax_x.text(0.5, 0.5, "Sin estaciones XPT en la sesión actual", ha="center", va="center")
         fig_x.tight_layout()
         self.canvas_xpt.canvas.draw()
 
@@ -2341,7 +2730,7 @@ class WellCuratorMainWindow(QMainWindow):
         fig = self.canvas_matrix.figure
         fig.clear()
         ax = fig.add_subplot(111)
-        if excel_path.exists():
+        if self._has_session_output and excel_path.exists():
             df = pd.read_excel(excel_path)
             fixed = {"File", "Well", "UWI", "Start", "Stop", "Step", "X", "Y", "Elevation"}
             curve_cols = [c for c in df.columns if c not in fixed]
@@ -2355,7 +2744,7 @@ class WellCuratorMainWindow(QMainWindow):
                 ax.set_xticklabels(curve_cols, rotation=90, fontsize=6.5)
                 ax.set_title(f"Matriz Maestra ({len(df)} pozos x {len(curve_cols)} curvas)", fontweight="bold")
         else:
-            ax.text(0.5, 0.5, "Aún no existe output/well_metadata.xlsx", ha="center", va="center")
+            ax.text(0.5, 0.5, "Sin exportaciones aún en la sesión actual", ha="center", va="center")
         fig.tight_layout()
         self.canvas_matrix.canvas.draw()
 
@@ -2412,6 +2801,26 @@ class WellCuratorMainWindow(QMainWindow):
         if path_str and Path(path_str).exists():
             df = pd.read_csv(Path(path_str), nrows=150)
             self._fill_table_from_df(self.tbl_out_csv, df, max_rows=150)
+
+    def _manual_refresh_output_tab(self) -> None:
+        self._has_session_output = True
+        self._refresh_output_tab()
+
+    def _clear_current_output_dir(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Vaciar carpeta de salida",
+            f"¿Seguro que querés eliminar todos los archivos exportados dentro de:\n{self.output_dir}?\n"
+            "(Tus archivos originales en Input/ permanecen intactos).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import shutil as _shutil
+            if self.output_dir.exists():
+                _shutil.rmtree(self.output_dir, ignore_errors=True)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.export_summaries.clear()
+            self._refresh_output_tab()
 
     def _open_output_folder(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
